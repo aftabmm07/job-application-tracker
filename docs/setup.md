@@ -60,4 +60,46 @@ python -m venv .venv
 - Dependencies are listed in `backend/requirements.txt`.
 - Use `python -m pip` rather than running `pip.exe` directly if Windows Application Control blocks it.
 - The current health endpoint only checks that the API responds; it does not check database connectivity.
-  
+
+
+## Running Backend Tests
+
+The backend uses Pytest for automated testing.
+
+### Prerequisites
+
+Install the backend dependencies inside the Python virtual environment:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### Run All Tests
+
+From the `backend` directory, execute:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -v
+```
+
+### Current Test Coverage
+
+The initial test suite verifies:
+
+- `GET /` returns HTTP 200 and the expected welcome response.
+- `GET /health` returns HTTP 200 and a healthy status.
+
+### Expected Result
+
+Both tests should pass:
+
+- `test_home` — PASSED
+- `test_health` — PASSED
+
+### Notes
+
+- Tests use FastAPI's `TestClient`.
+- HTTPX provides HTTP client functionality for testing.
+- Pytest cache files are excluded from Git.
+- The API server does not need to be running separately during these tests.
