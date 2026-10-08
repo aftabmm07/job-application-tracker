@@ -4,41 +4,93 @@
 ## Prerequisites
 
 - Git
-- Python 3.14.8 (current development environment)
 - Visual Studio Code
+- Docker Desktop with WSL 2 integration enabled
+- Ubuntu WSL
+- Python 3.14 with pip and venv support
 
 ## Clone the Repository
 
-```powershell
+In your Ubuntu WSL terminal:
+
+```bash
 git clone https://github.com/aftabmm07/job-application-tracker.git
 cd job-application-tracker
 ```
 
-## Backend Setup
+## PostgreSQL Setup
+
+The application uses PostgreSQL 17 running in Docker.
+
+### 1. Configure Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+POSTGRES_PASSWORD=replace_with_your_local_password
+```
+
+Use your own password. Never commit the `.env` file.
+
+### 2. Start PostgreSQL
+
+From the project root:
+
+```bash
+docker compose up -d
+```
+
+### 3. Verify Database Status
+
+```bash
+docker compose ps
+```
+
+The `job-tracker-db` container should show a healthy status.
+
+PostgreSQL is accessible locally at `127.0.0.1:5432`.
+
+The Docker Compose configuration uses a named volume to persist database data.
+
+## Backend Setup (Ubuntu WSL)
 
 ### 1. Navigate to the backend
 
-```powershell
+```bash
 cd backend
 ```
 
-### 2. Create a virtual environment
+### 2. Create a Python Virtual Environment
 
-```powershell
-python -m venv .venv
+For Linux-based development, create a virtual environment:
+
+```bash
+python3 -m venv ~/python-envs/job-tracker
 ```
 
-### 3. Install dependencies
+Activate it:
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```bash
+source ~/python-envs/job-tracker/bin/activate
 ```
 
-### 4. Start the development server
+### 3. Install Dependencies
 
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+```bash
+python -m pip install -r requirements.txt
 ```
+
+Dependencies include FastAPI, Uvicorn, Pytest, HTTPX, SQLAlchemy, Psycopg, and python-dotenv.
+
+### 4. Start the Backend Server
+
+```bash
+python -m uvicorn app.main:app --reload
+```
+
+The server runs at:
+
+http://127.0.0.1:8000
 
 ## Available Endpoints
 
@@ -46,60 +98,73 @@ python -m venv .venv
 |---|---|---|
 | GET | `/` | API welcome message |
 | GET | `/health` | Basic API health check |
+| GET | `/health/db` | PostgreSQL connectivity check |
 | GET | `/docs` | Interactive API documentation |
 
-## Local URLs
+## Database Connectivity
 
-- API: http://127.0.0.1:8000
-- Health: http://127.0.0.1:8000/health
-- Swagger UI: http://127.0.0.1:8000/docs
+The backend uses SQLAlchemy with the Psycopg PostgreSQL driver.
 
-## Notes
+Database connection configuration is defined in:
 
-- The virtual environment is excluded from Git.
-- Dependencies are listed in `backend/requirements.txt`.
-- Use `python -m pip` rather than running `pip.exe` directly if Windows Application Control blocks it.
-- The current health endpoint only checks that the API responds; it does not check database connectivity.
+`backend/app/database.py`
 
+The database connection uses:
+
+- Host: `127.0.0.1`
+- Port: `5432`
+- Database: `jobtracker_db`
+- Username: `jobtracker`
+- Password: loaded from `POSTGRES_PASSWORD`
+
+To verify connectivity, start the API and visit:
+
+http://127.0.0.1:8000/health/db
+
+Expected response:
+
+```json
+{
+  "status": "healthy",
+  "database": "connected"
+}
+```
+
+If the database is unavailable, the endpoint returns HTTP 503.
 
 ## Running Backend Tests
 
-The backend uses Pytest for automated testing.
+The backend uses Pytest and FastAPI's TestClient.
 
-### Prerequisites
+From the `backend` directory, run:
 
-Install the backend dependencies inside the Python virtual environment:
-
-```powershell
-cd backend
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-### Run All Tests
-
-From the `backend` directory, execute:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -v
+```bash
+python -m pytest -v
 ```
 
 ### Current Test Coverage
 
-The initial test suite verifies:
+The four tests verify:
 
-- `GET /` returns HTTP 200 and the expected welcome response.
-- `GET /health` returns HTTP 200 and a healthy status.
+1. `GET /` returns a successful response.
+2. `GET /health` returns a healthy status.
+3. `GET /health/db` succeeds when the database connection is available.
+4. `GET /health/db` returns HTTP 503 when the database connection fails.
 
-### Expected Result
+The database health tests use mocking, so a running PostgreSQL instance is not required for these tests.
 
-Both tests should pass:
+However, `POSTGRES_PASSWORD` must be configured when importing the application.
 
-- `test_home` — PASSED
-- `test_health` — PASSED
+### CI Testing
 
-### Notes
+GitHub Actions automatically runs the backend tests for pushes and pull requests targeting `main`.
 
-- Tests use FastAPI's `TestClient`.
-- HTTPX provides HTTP client functionality for testing.
-- Pytest cache files are excluded from Git.
-- The API server does not need to be running separately during these tests.
+The CI workflow supplies a dummy `POSTGRES_PASSWORD` environment variable for the mocked tests.
+
+## Development Notes
+
+- `.env` contains local credentials and must never be committed.
+- Python virtual environments are excluded from Git.
+- PostgreSQL data persists in a Docker named volume.
+- `docker compose down` stops and removes the containers without deleting the named database volume.
+- `GET /health` checks the API; `GET /health/db` additionally checks database connectivity.

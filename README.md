@@ -41,3 +41,58 @@ The application will allow users to:
 9. Dockerization
 10. CI/CD pipeline
 11. Cloud deployment
+
+
+## Current Implementation
+
+### Backend
+- Python with FastAPI
+- REST API endpoints
+- Automated testing with Pytest
+- GitHub Actions CI pipeline
+
+### Database
+- PostgreSQL 17 running in Docker
+- Docker Compose for local database setup
+- SQLAlchemy for database connectivity
+- Psycopg PostgreSQL driver
+- Environment-based database credentials
+- Persistent PostgreSQL storage using Docker volumes
+
+### Available API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/` | API welcome message |
+| GET | `/health` | API health check |
+| GET | `/health/db` | PostgreSQL connectivity check |
+| GET | `/docs` | Interactive API documentation |
+
+## Quick Start
+
+1. Clone the repository.
+2. Create a `.env` file in the project root containing `POSTGRES_PASSWORD`.
+3. Start PostgreSQL using `docker compose up -d`.
+4. Install backend dependencies from `backend/requirements.txt`.
+5. Start FastAPI using `python -m uvicorn app.main:app --reload` from the `backend` directory.
+6. Open http://127.0.0.1:8000/docs to explore the API.
+
+For detailed setup instructions, see [Development Setup Guide](docs/setup.md).
+
+## Development Status
+
+The project is under active development.
+
+Completed:
+- FastAPI backend initialization
+- Backend unit tests
+- GitHub Actions CI
+- PostgreSQL integration and connectivity checks
+
+Planned:
+- Job application database models
+- CRUD API endpoints
+- React frontend
+- Job application status tracking
+- Job description analysis and CV matching
+- Full application containerization and deployment
