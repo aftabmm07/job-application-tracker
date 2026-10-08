@@ -52,6 +52,7 @@ PostgreSQL is accessible locally at `127.0.0.1:5432`.
 
 The Docker Compose configuration uses a named volume to persist database data.
 
+
 ## Backend Setup (Ubuntu WSL)
 
 ### 1. Navigate to the backend
@@ -82,7 +83,39 @@ python -m pip install -r requirements.txt
 
 Dependencies include FastAPI, Uvicorn, Pytest, HTTPX, SQLAlchemy, Psycopg, and python-dotenv.
 
-### 4. Start the Backend Server
+### 4. Initialize the Database Tables
+
+After installing the backend dependencies and starting PostgreSQL, initialize the application tables.
+
+From the `backend` directory, run:
+
+```bash
+python -c "from app.database import engine; from app.models import Base; Base.metadata.create_all(bind=engine)"
+```
+
+This creates the `job_applications` table if it does not already exist.
+
+The table stores:
+
+- Company name
+- Job title
+- Location
+- Application status
+- Application date
+- Job description
+- Record creation timestamp
+
+To inspect the table, temporarily return to the project root:
+
+```bash
+cd ..
+docker compose exec db psql -U jobtracker -d jobtracker_db -c '\d job_applications'
+cd backend
+```
+
+**Note:** `create_all()` is used for initial development setup. Database schema migrations will be introduced with Alembic in a future phase.
+
+### 5. Start the Backend Server
 
 ```bash
 python -m uvicorn app.main:app --reload
@@ -92,6 +125,7 @@ The server runs at:
 
 http://127.0.0.1:8000
 
+
 ## Available Endpoints
 
 | Method | Endpoint | Description |
@@ -99,7 +133,50 @@ http://127.0.0.1:8000
 | GET | `/` | API welcome message |
 | GET | `/health` | Basic API health check |
 | GET | `/health/db` | PostgreSQL connectivity check |
-| GET | `/docs` | Interactive API documentation |
+| POST | `/applications` | Create a job application |
+| GET | `/applications` | List all job applications |
+| GET | `/applications/{application_id}` | Retrieve an application by ID |
+| PATCH | `/applications/{application_id}` | Update an existing application |
+| DELETE | `/applications/{application_id}` | Delete an application |
+| GET | `/docs` | Interactive Swagger API documentation |
+
+### Application Status Values
+
+Supported statuses are:
+
+- `saved`
+- `applied`
+- `interview`
+- `offer`
+- `rejected`
+
+### Example: Create a Job Application
+
+Send a `POST` request to `/applications` with:
+
+```json
+{
+  "company_name": "Example Tech GmbH",
+  "job_title": "Working Student DevOps",
+  "location": "Dortmund",
+  "status": "applied",
+  "application_date": "2026-10-08",
+  "job_description": "Support CI/CD pipelines and cloud infrastructure."
+}
+```
+
+A successful request returns HTTP `201 Created` with the stored application, including its generated ID and creation timestamp.
+
+Use http://127.0.0.1:8000/docs to test the endpoints interactively.
+
+### API Validation and Errors
+
+- `422` — Invalid request data
+- `404` — Requested application does not exist
+- `503` — Database operation fails or database health check fails
+
+Company names and job titles cannot be empty or contain only whitespace.
+
 
 ## Database Connectivity
 
@@ -142,18 +219,37 @@ From the `backend` directory, run:
 python -m pytest -v
 ```
 
+
 ### Current Test Coverage
 
-The four tests verify:
+The backend currently has **12 automated tests**.
 
-1. `GET /` returns a successful response.
-2. `GET /health` returns a healthy status.
-3. `GET /health/db` succeeds when the database connection is available.
-4. `GET /health/db` returns HTTP 503 when the database connection fails.
+Four tests cover API and database health:
 
-The database health tests use mocking, so a running PostgreSQL instance is not required for these tests.
+1. API welcome endpoint
+2. API health endpoint
+3. Successful database connectivity check
+4. Database connectivity failure handling
 
-However, `POSTGRES_PASSWORD` must be configured when importing the application.
+Eight tests cover job application management:
+
+1. Create an application
+2. List applications
+3. Retrieve an application by ID
+4. Update an application
+5. Delete an application
+6. Reject invalid application creation data
+7. Reject null values for required fields during updates
+8. Reject whitespace-only company names and job titles
+
+Application CRUD tests use an isolated in-memory SQLite database with FastAPI dependency overrides.
+
+This prevents test records from affecting the development PostgreSQL database.
+
+The database health tests use mocking.
+
+A running PostgreSQL container is not required for these automated tests, but `POSTGRES_PASSWORD` must be configured when importing the application.
+
 
 ### CI Testing
 
