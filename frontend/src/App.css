@@ -104,3 +104,8 @@ button:disabled { opacity: 0.65; cursor: wait; }
 @media (max-width: 36rem) {
   .application-fields { grid-template-columns: minmax(0, 1fr); }
 }
+
+.row-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.danger-button { background: #b91c1c; color: #fff; }
+.danger-button:hover { background: #991b1b; }
+.delete-dialog { width: min(32rem, calc(100% - 2rem)); overflow-wrap: anywhere; }
