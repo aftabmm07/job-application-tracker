@@ -109,3 +109,17 @@ button:disabled { opacity: 0.65; cursor: wait; }
 .danger-button { background: #b91c1c; color: #fff; }
 .danger-button:hover { background: #991b1b; }
 .delete-dialog { width: min(32rem, calc(100% - 2rem)); overflow-wrap: anywhere; }
+
+.summary-note { margin: 0 0 0.75rem; color: #475569; font-size: 0.875rem; }
+.application-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
+  padding: 1.5rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+@media (max-width: 36rem) {
+  .application-filters { grid-template-columns: minmax(0, 1fr); padding: 1rem; }
+  .application-filters > button { justify-self: start; }
+}
