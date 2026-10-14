@@ -8,6 +8,12 @@ export default defineConfig({
       '/applications': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        // The page and API share a path: serve HTML navigation locally, proxy fetches.
+        bypass(request) {
+          if (request.method === 'GET' && request.headers.accept?.includes('text/html')) {
+            return '/index.html'
+          }
+        },
       },
     },
   },

@@ -1,6 +1,7 @@
 import {
   Bar, BarChart, CartesianGrid, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
+import { Link } from 'react-router-dom'
 import { applicationStatuses } from '../applicationStatuses.js'
 import { calculateAnalytics } from '../applicationAnalytics.js'
 
@@ -88,7 +89,7 @@ function ApplicationAnalytics({ applications }) {
     <section className="analytics-section" aria-labelledby="analytics-heading">
       <h2 id="analytics-heading">Application insights</h2>
       <p className="analytics-description">Based on all applications, regardless of table search or status filters.
-        {' '}The total is shown in the summary cards above.</p>
+        {' '}The total is shown in the summary cards on the <Link to="/applications">Applications page</Link>.</p>
       <dl className="rate-grid">
         <div className="summary-card"><dt>Interview rate</dt><dd>{Number(analytics.interviewRate.toFixed(1))}%</dd></div>
         <div className="summary-card"><dt>Offer rate</dt><dd>{Number(analytics.offerRate.toFixed(1))}%</dd></div>
