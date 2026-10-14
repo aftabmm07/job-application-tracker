@@ -83,37 +83,17 @@ python -m pip install -r requirements.txt
 
 Dependencies include FastAPI, Uvicorn, Pytest, HTTPX, SQLAlchemy, Psycopg, and python-dotenv.
 
-### 4. Initialize the Database Tables
+### 4. Versioned database setup
 
-After installing the backend dependencies and starting PostgreSQL, initialize the application tables.
+Use Alembic for database setup and upgrades; `Base.metadata.create_all()` is only
+used by isolated model/API unit tests. See the migration procedure below before
+running any database commands. This phase deliberately blocks `jobtracker_db`
+from migration tooling. Never apply this branch to the original database without
+a separately approved deployment/migration plan.
 
-From the `backend` directory, run:
-
-```bash
-python -c "from app.database import engine; from app.models import Base; Base.metadata.create_all(bind=engine)"
-```
-
-This creates the `job_applications` table if it does not already exist.
-
-The table stores:
-
-- Company name
-- Job title
-- Location
-- Application status
-- Application date
-- Job description
-- Record creation timestamp
-
-To inspect the table, temporarily return to the project root:
-
-```bash
-cd ..
-docker compose exec db psql -U jobtracker -d jobtracker_db -c '\d job_applications'
-cd backend
-```
-
-**Note:** `create_all()` is used for initial development setup. Database schema migrations will be introduced with Alembic in a future phase.
+The new models require revision `0002_auth_models`. Existing PostgreSQL instances
+still on the old schema cannot serve ORM application queries from this branch
+until a separately approved migration is completed. Unit tests use isolated SQLite.
 
 ### 5. Start the Backend Server
 
@@ -254,7 +234,9 @@ A running PostgreSQL container is not required for these automated tests, but `P
 
 ### CI Testing
 
-GitHub Actions automatically runs the backend tests for pushes and pull requests targeting `main`.
+GitHub Actions runs the backend tests and a fresh PostgreSQL 17 migration/metadata
+check for pushes and pull requests targeting `main`. The CI database is explicitly
+named `jobtracker_auth_ci`; SQLite migration tests also cover populated legacy data.
 
 The CI workflow supplies a dummy `POSTGRES_PASSWORD` environment variable for the mocked tests.
 
@@ -344,3 +326,120 @@ production requirements, insecure configuration, and secret-safe errors/repr.
 Existing CRUD tests still use in-memory SQLite; health checks still mock PostgreSQL.
 CI needs no new secrets under the default development environment. Production
 configuration tests use isolated mappings and synthetic test-only values.
+
+## Versioned schema and authentication models (Phase 14)
+
+`alembic==1.20.0` introduces two reviewed revisions:
+
+- `0001_legacy` exactly reproduces the original `job_applications` table. It does
+  not add server defaults that were previously only Python/ORM defaults.
+- `0002_auth_models` adds `users`, `sessions`, and nullable/indexed application
+  `user_id` referencing users with ON DELETE RESTRICT. It never assigns owners,
+  changes application values, or creates accounts/sessions. PostgreSQL uses
+  additive ALTER TABLE. SQLite uses Alembic batch copy/recreation to add the FK;
+  tests compare every original value and verify all owners remain NULL.
+
+Users have normalized unique email, an Argon2id-format password hash, UTC creation
+and optional email verification timestamps, and `is_active=false` by default.
+A database check prevents activation before email verification. The hash-prefix
+check is a storage guard, not password verification; use the password helpers.
+Email normalization is trim/lowercase; syntax validation belongs to future request
+schemas. Database uniqueness and normalization checks also protect direct inserts.
+
+Sessions store **32-byte binary SHA-256 digests**, never raw bearer tokens, with a
+unique index. Nullable user_id supports anonymous pre-login sessions. User deletion
+cascades to sessions; owned applications prevent user deletion instead of being
+silently removed or orphaned. Absolute and idle expiration indexes support cleanup.
+Checks enforce creation <= last activity < idle expiry <= absolute expiry.
+UTCDateTime rejects naive writes, normalizes aware values to UTC, and restores UTC
+awareness when SQLite returns naive UTC. Existing application creation timestamp
+SQL type is unchanged. SQLite foreign keys are enabled for every test connection.
+
+**Security boundary:** CRUD authorization is not implemented in this checkpoint.
+Existing endpoints still expose all rows on their configured development database;
+new nullable ownership alone does not isolate legacy records. Keep this intermediate
+branch private/local. Do not deploy publicly until authentication and owner-scoped
+queries are implemented. Verified ownership backfill is a later, explicit operation.
+
+### Migration target safety
+
+Migration commands never import `app.database` or fall back to its original target.
+They require `MIGRATION_DATABASE_NAME`, reject `jobtracker_db` and system database
+names before connecting, and verify PostgreSQL's actual current_database and public
+schema. No command silently stamps a database. Offline mode and downgrades are
+intentionally disabled: adoption requires live schema verification, and reversing
+auth tables/ownership needs a separate data-preservation plan.
+
+Optional connection overrides are `MIGRATION_DATABASE_HOST` (127.0.0.1),
+`MIGRATION_DATABASE_PORT` (5432), and `MIGRATION_DATABASE_USER` (jobtracker).
+`POSTGRES_PASSWORD` is loaded from the existing private .env/exported environment.
+Never put passwords in CLI arguments or print database URLs.
+
+### Fresh temporary database
+
+Obtain approval for the exact database and command first. Have the operator create
+an empty, explicitly named temporary database, then from `backend/` run:
+
+```bash
+MIGRATION_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m alembic upgrade head
+MIGRATION_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m alembic current
+MIGRATION_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m alembic check
+```
+
+Fresh databases run both revisions, without stamping. Never stamp head to skip
+schema creation.
+
+### Existing legacy database: verify, explicitly stamp, then upgrade
+
+Only use an approved temporary clone of a verified restored backup for rehearsal.
+Never run these commands against the original `jobtracker_db`. Before executing,
+record the target name, confirm backup/restore validation, and approve the commands:
+
+```bash
+MIGRATION_DATABASE_NAME=jobtracker_auth_legacy_9b2 python -m scripts.verify_legacy_schema
+MIGRATION_DATABASE_NAME=jobtracker_auth_legacy_9b2 python -m alembic stamp 0001_legacy
+MIGRATION_DATABASE_NAME=jobtracker_auth_legacy_9b2 python -m alembic upgrade head
+MIGRATION_DATABASE_NAME=jobtracker_auth_legacy_9b2 python -m alembic check
+```
+
+The verifier is read-only. It checks exact table/column types, lengths, nullability,
+primary key, server defaults/serial sequence, constraints/indexes and unexpected
+views/triggers. Drift must be investigated, never bypassed by stamping. The Alembic
+environment repeats verification for unversioned existing tables and refuses to
+skip directly to head. Stamping only records adoption; the additive revision adds
+the new schema. Compare counts AND every legacy field, not counts alone. Confirm
+all legacy user_id values remain NULL and users/sessions are empty.
+
+For this phase, original-database adoption is deliberately blocked, not authorized.
+When ownership enforcement exists, an independently reviewed migration/deployment
+plan must precede any original-database upgrade. Never automatically assign old
+records. Preserve unverified records and require an audited, verified owner mapping.
+
+### Reproducible PostgreSQL rehearsal
+
+The following script requires explicit approval before execution:
+
+```bash
+MIGRATION_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m scripts.rehearse_postgres
+```
+
+It creates NEW databases `jobtracker_auth_fresh_9b2` and
+`jobtracker_auth_legacy_9b2`, aborting if either already exists. It reads only from
+`jobtracker_restore_test`, streams pg_dump into pg_restore on the new legacy clone,
+and does not access or alter the existing backup artifact. It verifies/stamps only
+the clone, upgrades both targets, compares legacy record fingerprints/counts and
+NULL ownership, checks metadata consistency, and confirms the source is unchanged.
+It assumes the existing `job-tracker-db` Docker container and local jobtracker role.
+No databases are dropped or cleaned up. Inspect any failed partial rehearsal;
+do not overwrite or reuse it automatically. The manual commands above and this
+script are alternative procedures, not steps to run consecutively on the same DB.
+
+### Migration and model tests
+
+From `backend/`, run `python -m pytest -v`. New test modules `test_models.py` and
+`test_migrations.py` use only temporary SQLite databases and enforce foreign keys.
+They cover fresh upgrades, populated unversioned baseline adoption, exact record
+preservation, drift rejection, metadata alignment, uniqueness, ownership/session
+FKs, activation checks, expiration checks, UTC handling, and disabled downgrades.
+CI additionally runs `alembic upgrade head` / `alembic check` against its disposable
+PostgreSQL service. Rehearsal databases are separate from all pytest databases.

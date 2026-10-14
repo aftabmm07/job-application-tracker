@@ -14,6 +14,21 @@ jobs:
     name: Run Backend Tests
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: jobtracker
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: jobtracker_auth_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jobtracker -d jobtracker_auth_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
       POSTGRES_PASSWORD: ci_test_password
 
@@ -37,3 +52,11 @@ jobs:
       - name: Run Pytest
         working-directory: backend
         run: python -m pytest -v
+
+      - name: Check PostgreSQL migrations on fresh CI database
+        working-directory: backend
+        env:
+          MIGRATION_DATABASE_NAME: jobtracker_auth_ci
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
