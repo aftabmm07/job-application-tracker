@@ -1,14 +1,16 @@
-from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy import text
+from fastapi import FastAPI, HTTPException, Depends, Request
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.auth_config import get_auth_settings
+from app.auth_config import AuthSettings, get_auth_settings
 from app.auth_routes import router as auth_router
 from app.dependencies import get_db
 from app.session_http import no_store
 from app.database import engine
-from app.models import JobApplication
+from app.models import JobApplication, User
+from app.auth_dependencies import auth_error, get_auth_db, get_current_user, get_mutation_user
+from app.session_service import SessionService, SessionStorageError, commit_session_changes
 from app.schemas import (
     JobApplicationCreate,
     JobApplicationResponse,
@@ -29,9 +31,10 @@ app.include_router(auth_router)
 
 
 @app.middleware("http")
-async def auth_no_store(request, call_next):
+async def private_no_store(request, call_next):
     response = await call_next(request)
-    if request.url.path == "/auth" or request.url.path.startswith("/auth/"):
+    if (request.url.path in {"/auth", "/applications"}
+            or request.url.path.startswith(("/auth/", "/applications/"))):
         no_store(response)
     return response
 
@@ -68,128 +71,116 @@ def database_health():
             detail="Database unavailable"
         )
 
-@app.post(
-    "/applications",
-    response_model=JobApplicationResponse,
-    status_code=201,
-)
+def application_storage_error(db):
+    try:
+        db.rollback()
+    except SQLAlchemyError:
+        pass
+    raise HTTPException(503, "Database operation failed", headers={"Cache-Control": "no-store"}) from None
+
+
+def finish_application_request(db, request, settings):
+    # Renewal and CRUD changes share one commit. A revoked/expired session cannot
+    # leave a partially committed mutation behind. Absolute expiry never extends.
+    raw = request.cookies.get(settings.session_cookie_name)
+    if SessionService(db, settings).renew(raw) is None:
+        db.rollback()
+        auth_error(401, "Authentication required")
+    commit_session_changes(db)
+
+
+def missing_application():
+    # Deliberately identical for absent, foreign-owned and NULL-owned records.
+    raise HTTPException(404, "Job application not found")
+
+
+@app.post("/applications", response_model=JobApplicationResponse, status_code=201)
 def create_application(
-    application: JobApplicationCreate,
-    db: Session = Depends(get_db),
+    application: JobApplicationCreate, request: Request,
+    user: User = Depends(get_mutation_user), db: Session = Depends(get_auth_db),
+    settings: AuthSettings = Depends(get_auth_settings),
 ):
-    new_application = JobApplication(**application.model_dump())
-
     try:
-        db.add(new_application)
-        db.commit()
-        db.refresh(new_application)
-
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database operation failed",
-        )
-
-    return new_application
+        record = JobApplication(**application.model_dump(), user_id=user.id)
+        db.add(record)
+        db.flush()
+        # Snapshot the public schema before commit; no unscoped refresh/query.
+        result = JobApplicationResponse.model_validate(record)
+        finish_application_request(db, request, settings)
+        return result
+    except (SQLAlchemyError, SessionStorageError):
+        application_storage_error(db)
 
 
-@app.get(
-    "/applications",
-    response_model=list[JobApplicationResponse],
-)
+@app.get("/applications", response_model=list[JobApplicationResponse])
 def list_applications(
-    db: Session = Depends(get_db),
+    request: Request, user: User = Depends(get_current_user),
+    db: Session = Depends(get_auth_db), settings: AuthSettings = Depends(get_auth_settings),
 ):
-    applications = (
-        db.query(JobApplication)
-        .order_by(JobApplication.id.desc())
-        .all()
-    )
+    try:
+        records = db.scalars(select(JobApplication).where(
+            JobApplication.user_id == user.id,
+        ).order_by(JobApplication.id.desc())).all()
+        result = [JobApplicationResponse.model_validate(record) for record in records]
+        finish_application_request(db, request, settings)
+        return result
+    except (SQLAlchemyError, SessionStorageError):
+        application_storage_error(db)
 
-    return applications
 
-
-@app.get(
-    "/applications/{application_id}",
-    response_model=JobApplicationResponse,
-)
+@app.get("/applications/{application_id}", response_model=JobApplicationResponse)
 def get_application(
-    application_id: int,
-    db: Session = Depends(get_db),
+    application_id: int, request: Request, user: User = Depends(get_current_user),
+    db: Session = Depends(get_auth_db), settings: AuthSettings = Depends(get_auth_settings),
 ):
-    application = db.get(JobApplication, application_id)
+    try:
+        record = db.scalar(select(JobApplication).where(
+            JobApplication.id == application_id, JobApplication.user_id == user.id,
+        ))
+        if record is None:
+            missing_application()
+        result = JobApplicationResponse.model_validate(record)
+        finish_application_request(db, request, settings)
+        return result
+    except (SQLAlchemyError, SessionStorageError):
+        application_storage_error(db)
 
-    if application is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Job application not found",
-        )
 
-    return application
-
-
-
-@app.patch(
-    "/applications/{application_id}",
-    response_model=JobApplicationResponse,
-)
+@app.patch("/applications/{application_id}", response_model=JobApplicationResponse)
 def update_application(
-    application_id: int,
-    updates: JobApplicationUpdate,
-    db: Session = Depends(get_db),
+    application_id: int, updates: JobApplicationUpdate, request: Request,
+    user: User = Depends(get_mutation_user), db: Session = Depends(get_auth_db),
+    settings: AuthSettings = Depends(get_auth_settings),
 ):
-    application = db.get(JobApplication, application_id)
-
-    if application is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Job application not found",
-        )
-
-    update_data = updates.model_dump(exclude_unset=True)
-
     try:
-        for field, value in update_data.items():
-            setattr(application, field, value)
+        ownership = (JobApplication.id == application_id, JobApplication.user_id == user.id)
+        values = updates.model_dump(exclude_unset=True)
+        if values:
+            record = db.scalar(update(JobApplication).where(*ownership).values(**values)
+                               .returning(JobApplication).execution_options(populate_existing=True))
+        else:
+            # Empty PATCH is a validated no-op; UPDATE SET with no fields is invalid SQL.
+            record = db.scalar(select(JobApplication).where(*ownership))
+        if record is None:
+            missing_application()
+        result = JobApplicationResponse.model_validate(record)
+        finish_application_request(db, request, settings)
+        return result
+    except (SQLAlchemyError, SessionStorageError):
+        application_storage_error(db)
 
-        db.commit()
-        db.refresh(application)
 
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database operation failed",
-        )
-
-    return application
-
-
-
-@app.delete(
-    "/applications/{application_id}",
-    status_code=204,
-)
+@app.delete("/applications/{application_id}", status_code=204)
 def delete_application(
-    application_id: int,
-    db: Session = Depends(get_db),
+    application_id: int, request: Request, user: User = Depends(get_mutation_user),
+    db: Session = Depends(get_auth_db), settings: AuthSettings = Depends(get_auth_settings),
 ):
-    application = db.get(JobApplication, application_id)
-
-    if application is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Job application not found",
-        )
-
     try:
-        db.delete(application)
-        db.commit()
-
-    except SQLAlchemyError:
-        db.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Database operation failed",
-        )
+        deleted_id = db.scalar(delete(JobApplication).where(
+            JobApplication.id == application_id, JobApplication.user_id == user.id,
+        ).returning(JobApplication.id))
+        if deleted_id is None:
+            missing_application()
+        finish_application_request(db, request, settings)
+    except (SQLAlchemyError, SessionStorageError):
+        application_storage_error(db)

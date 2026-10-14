@@ -1,4 +1,4 @@
-"""Reusable read-only authentication dependency; CRUD adoption is a later task."""
+"""Reusable authenticated-user and CSRF dependencies for protected endpoints."""
 from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.auth_config import AuthSettings, get_auth_settings
 from app.dependencies import get_db
 from app.models import User
+from app.csrf import require_csrf
 from app.session_http import no_store
 from app.session_service import SessionService, SessionStorageError
 
@@ -44,5 +45,12 @@ def get_current_user(request: Request, response: Response,
         except SQLAlchemyError:
             pass
         auth_error(503, "Authentication service unavailable")
-    # Do not renew here: future unsafe endpoints must validate CSRF first.
+    # Reuse this validated row for CSRF; never renew failed security checks.
+    request.state.auth_session = record
+    return user
+
+
+def get_mutation_user(request: Request, user: User = Depends(get_current_user),
+                      settings: AuthSettings = Depends(get_auth_settings)) -> User:
+    require_csrf(request, request.state.auth_session, settings)
     return user

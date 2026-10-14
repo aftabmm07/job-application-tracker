@@ -60,3 +60,10 @@ jobs:
         run: |
           python -m alembic upgrade head
           python -m alembic check
+
+      - name: Check ownership on disposable PostgreSQL CI database
+        working-directory: backend
+        env:
+          MIGRATION_DATABASE_NAME: jobtracker_auth_ci
+          RUN_POSTGRES_OWNERSHIP_TESTS: "1"
+        run: python -m pytest -q tests/test_postgres_ownership.py

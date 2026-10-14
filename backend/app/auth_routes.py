@@ -1,4 +1,4 @@
-"""Authentication endpoints; application ownership enforcement is not enabled yet."""
+"""Authentication endpoints sharing the same sessions used by protected CRUD."""
 import secrets
 
 from fastapi import APIRouter, Depends, Request, Response

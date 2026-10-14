@@ -565,8 +565,8 @@ backend pytest command; no dependencies or schema changes are required here.
 
 ## Authentication API (Phase 14, checkpoint 9B.4)
 
-This checkpoint adds backend auth endpoints only. The frontend and application
-CRUD are unchanged: applications still lack enforced authentication/ownership.
+Checkpoint 9B.4 added backend auth endpoints. Checkpoint 9B.5 below now protects
+application CRUD; the frontend still needs Phase 15 authentication integration.
 **Do not deploy publicly yet**, and never run this branch on the original unmigrated
 `jobtracker_db`. No email is sent, and production account activation is not provided.
 
@@ -690,7 +690,97 @@ only for trusted proxies; never trust arbitrary X-Forwarded-For. CORS stays clos
 Generic responses and comparable hashing reduce enumeration signals but do not
 promise identical latency, particularly across inserts, contention, and hash upgrades.
 
-No auth endpoints enforce application ownership yet. No PostgreSQL concurrency or
+At checkpoint 9B.4, application ownership was not enforced; see 9B.5 below. No PostgreSQL concurrency or
 mailbox-verification delivery is exercised by the SQLite suite. No PostgreSQL
 commands, server startup, migrations, activations or real registration were executed
 as part of this checkpoint's validation. email-validator==2.3.0 is now a dependency.
+
+## Application ownership and authorization (Phase 14, checkpoint 9B.5)
+
+Every `/applications` endpoint requires an authenticated, active, email-verified
+user through the existing get_current_user dependency. Anonymous, expired, revoked,
+disabled, and invalid sessions receive 401. The welcome and health endpoints remain
+public. There is no separate backend analytics endpoint; analytics use the scoped
+GET list, so one user's charts cannot include another user's or legacy records.
+
+- POST derives user_id only from the authenticated user. Create and PATCH schemas
+  reject user_id and all other undeclared fields with 422. Response fields remain
+  unchanged and never include ownership IDs, password hashes, or session data.
+- GET list filters by owner and retains descending ID order.
+- GET detail filters by both ID and owner. PATCH and DELETE include the same pair
+  of conditions directly in UPDATE/DELETE SQL and return only matching rows.
+  Empty PATCH is an owner-scoped read/no-op. Nullable-field clearing still works.
+- Foreign, nonexistent, and NULL-owned IDs share the exact same 404 body. There is
+  no public legacy-claim operation. No legacy owner is assigned automatically.
+- Unsafe requests require the existing CSRF token, trusted Origin/strict Referer,
+  and JSON Content-Type. This includes bodyless DELETE, consistent with the existing
+  CSRF helper. Failed checks do not renew activity or change application rows.
+- Successful CRUD operations, including reads, renew idle activity without changing
+  absolute expiry. Renewal and mutations share a commit. If final session renewal
+  fails because the session was revoked, expired or became ineligible, pending
+  application changes roll back with 401. Database failures roll back with generic
+  503 responses. Public response snapshots are created before commit; there is no
+  unscoped post-commit application refresh. All application responses use no-store.
+
+Legacy rows with NULL user_id are now quarantined by the application queries. This
+checkpoint does not update, delete, reassign or migrate any existing PostgreSQL
+rows. The original database remains unmigrated and must not be used by this branch.
+The backup, restore-test DB, and earlier rehearsal DBs must remain unchanged.
+
+### Tests and CI safety
+
+The original CRUD regression assertions remain, with fixtures now obtaining real
+anonymous sessions, logging in active SQLite test users, and sending the rotated
+session's CSRF token. Authentication is not bypassed in those fixtures. Ownership
+integration tests exercise two real logged-in clients, guessed/legacy IDs, scoped
+lists, mutation SQL predicates, ownership injection, session failures, rollback,
+content types, CSRF and origin controls. No PostgreSQL-changing command is needed
+for the default full suite: run `python -m pytest -q` from `backend/`.
+
+An optional PostgreSQL API check exists in `test_postgres_ownership.py`. It is skipped
+unless RUN_POSTGRES_OWNERSHIP_TESTS=1 and refuses any target other than
+`jobtracker_auth_ci` before connecting. CI runs it AFTER upgrading/checking the fresh
+PostgreSQL 17 service. It inserts only synthetic CI rows in an outer transaction,
+uses savepoints for endpoint commits, rolls everything back, and verifies zero rows
+remain. It refuses a nonempty CI database. Do not run its opt-in command locally
+without explicit database-changing approval; it does not target any restored or
+rehearsal database. CI definitions are not evidence of a remote run in this task.
+
+### Concurrency and remaining production work
+
+Owner predicates are part of each mutation statement, avoiding a read-then-authorize
+race. Concurrent deletion or ownership changes before an UPDATE/DELETE predicate
+is evaluated cannot turn it into an unscoped mutation. PostgreSQL serializes row
+updates; disjoint partial updates do not overwrite omitted fields. There is no
+optimistic version column: concurrent edits to the same field remain last-write-wins.
+
+Conditional session renewal checks expiry/revocation again before commit. A logout
+that wins before renewal causes rollback; a logout waiting on renewal's row lock
+can complete after that already-authorized request commits. Account deactivation
+concurrent with an in-flight request is not a global cancellation mechanism: a
+request authorized before deactivation may complete. SQLite tests cannot prove
+PostgreSQL concurrent scheduling behavior; the opt-in CI check is sequential.
+RLS is not enabled: SQL ownership filters protect API access, not direct privileged
+SQL or future code that omits them. Continue reviewing new data endpoints.
+
+Before production: verified-email activation, shared multi-worker throttling,
+HTTPS/proxy and secret-management review, dependency/logging review, request size
+limits, operational monitoring, and separately approved original-data migration and
+verified ownership backfill are still required. Do not publicly deploy this branch.
+
+### Required Phase 15 frontend changes
+
+1. Add /auth to the existing Vite proxy, retaining HTML/API distinction for
+   /applications. Bootstrap authentication with /auth/me before fetching private
+   application data; treat 401 as signed out, not a generic retry loop.
+2. Fetch /auth/csrf with the same-origin cookie, keep its token in memory, and use
+   application/json plus X-CSRF-Token on POST/PATCH/DELETE and auth mutations.
+   Fetch a new CSRF token after login rotation; never use localStorage for sessions.
+3. Supply login/logout and registration/activation-required UI. Public registration
+   does not activate users or send verification mail yet.
+4. On logout, 401, or account changes, abort stale requests and clear application
+   lists, analytics and account-specific state so one user's cached data cannot
+   appear for the next user. Handle CSRF 403 separately and bootstrap/retry only
+   when appropriate; never blindly replay a mutation that may have committed.
+5. Continue deriving summaries and charts from the full owner-scoped API list.
+   The current frontend was deliberately not modified and is not yet auth-ready.
