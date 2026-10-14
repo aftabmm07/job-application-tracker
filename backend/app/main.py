@@ -4,7 +4,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth_config import get_auth_settings
-from app.database import engine, SessionLocal
+from app.auth_routes import router as auth_router
+from app.dependencies import get_db
+from app.session_http import no_store
+from app.database import engine
 from app.models import JobApplication
 from app.schemas import (
     JobApplicationCreate,
@@ -20,6 +23,17 @@ app = FastAPI(
     description="Backend API for managing job applications",
     version="0.1.0"
 )
+
+
+app.include_router(auth_router)
+
+
+@app.middleware("http")
+async def auth_no_store(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/auth" or request.url.path.startswith("/auth/"):
+        no_store(response)
+    return response
 
 
 @app.get("/")
@@ -53,14 +67,6 @@ def database_health():
             status_code=503,
             detail="Database unavailable"
         )
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 
 @app.post(
     "/applications",

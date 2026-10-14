@@ -22,7 +22,9 @@ DATABASE_URL = URL.create(
     password=password,
     host="127.0.0.1",
     port=5432,
-    database="jobtracker_db",
+    # Explicit override for isolated migrated development databases. No migration
+    # or connection is performed here; never run this branch on the original DB.
+    database=os.getenv("APP_DATABASE_NAME", "jobtracker_db"),
 )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)

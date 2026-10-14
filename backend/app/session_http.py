@@ -1,4 +1,4 @@
-"""Cookie/response helpers, intentionally not wired into current endpoints."""
+"""Cookie/response helpers shared by authentication endpoints."""
 from datetime import UTC, datetime
 
 from starlette.responses import Response

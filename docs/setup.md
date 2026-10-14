@@ -446,9 +446,9 @@ PostgreSQL service. Rehearsal databases are separate from all pytest databases.
 
 ## Session and CSRF foundations (Phase 14, checkpoint 9B.3)
 
-These helpers are not attached to endpoints yet. Public health routes and existing
-application CRUD retain their current behavior. No registration, login, me, logout,
-frontend integration, PostgreSQL writes, or migrations are introduced here.
+At checkpoint 9B.3 these helpers were not attached to endpoints. Checkpoint 9B.4
+below adds the auth API while keeping health and application CRUD behavior unchanged.
+The helper checkpoint itself introduced no endpoints or PostgreSQL changes.
 
 ### Session service and transaction boundary
 
@@ -562,3 +562,135 @@ PostgreSQL. PostgreSQL row-lock behavior is implemented but concurrent transacti
 are not exercised by SQLite. Expired-row cleanup and endpoint-level throttling are
 future work; expiry enforcement does not depend on cleanup. Reuse the existing
 backend pytest command; no dependencies or schema changes are required here.
+
+## Authentication API (Phase 14, checkpoint 9B.4)
+
+This checkpoint adds backend auth endpoints only. The frontend and application
+CRUD are unchanged: applications still lack enforced authentication/ownership.
+**Do not deploy publicly yet**, and never run this branch on the original unmigrated
+`jobtracker_db`. No email is sent, and production account activation is not provided.
+
+### Safe local target and test workflow
+
+Run automated tests from `backend/` with `python -m pytest -q`. Auth integration
+tests override the shared database dependency with in-memory SQLite, use synthetic
+credentials, and never connect to PostgreSQL. They cover the complete flow below,
+including the private activation helper with an explicitly allowed test target.
+
+For manual HTTP testing, use only a separately approved migrated development DB.
+`APP_DATABASE_NAME` now selects the API database; its legacy default is still
+`jobtracker_db` for compatibility, so an explicit override is mandatory for this
+branch. The existing private POSTGRES_PASSWORD/user/host settings remain unchanged.
+For example, AFTER approval to write the isolated target, from `backend/`:
+
+```bash
+APP_ENV=development APP_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m uvicorn app.main:app --reload
+```
+
+Starting a server and using registration/login/bootstrap will write that selected
+DB. Do not run this command or issue database-changing HTTP requests without the
+required approval. The frontend proxy does not yet include /auth; test directly
+against the backend with an HTTP client/cookie jar and the trusted development
+Origin header, or use the existing automated TestClient suite.
+
+### Endpoint flow and HTTP contract
+
+1. **GET /auth/csrf** with a trusted Origin (for example http://localhost:5173), or
+   a strict trusted Referer fallback. It returns `{"csrf_token":"..."}` and no-store.
+   Without a valid cookie it commits a fresh anonymous session and then sets the
+   HttpOnly cookie. With an existing valid anonymous/authenticated session it
+   returns its CSRF token without setting another cookie, creating another row,
+   rotating it, or extending activity. Expired/unknown cookies get fresh random
+   anonymous sessions. Expired rows await separate cleanup. Raw bearer tokens
+   never appear in JSON. Keep the cookie jar and returned CSRF token.
+2. **POST /auth/register** with application/json, Origin/Referer, the cookie and
+   X-CSRF-Token. JSON is `{"email":"person@example.com","password":"..."}`. Email
+   syntax is checked with email-validator (no DNS/network checks), normalized and
+   lowercased; display names are rejected. Password policy is unchanged. Extra
+   fields such as is_active/user_id are rejected. Both new and duplicate addresses
+   receive the same generic 202 response. Both paths perform Argon2id hashing.
+   A database uniqueness race is rolled back and confirmed against normalized email
+   before returning the generic response; unrelated constraint failures return 503.
+   Duplicate registration never changes the stored password. New users remain
+   inactive/unverified, and registration creates no authenticated session/cookie.
+3. **Development activation**, described below, is required to test successful login.
+   Public email delivery/verification remains deferred; a normal new registration
+   cannot sign in in production. No response claims that an email has been sent.
+4. **POST /auth/login** uses the same JSON fields and anonymous cookie/CSRF headers.
+   Wrong passwords, unknown accounts and inactive/unverified accounts all receive
+   401 `Invalid credentials`. Unknown accounts use a precomputed Argon2id dummy
+   hash so they still perform password verification. Correct credentials rotate the
+   live anonymous session to a fresh authenticated token, deleting the old session
+   in the same transaction. Any password-hash upgrade is part of that transaction.
+   Only after commit does the new HttpOnly cookie get set. JSON contains only id
+   and normalized email. An already authenticated cookie is not accepted as an
+   anonymous login session (403); logout/bootstrap before signing in again.
+5. **GET /auth/me** requires the authenticated cookie and returns only id/email.
+   Missing, anonymous, expired, revoked or disabled-account sessions return 401.
+   A successful request renews idle activity without extending absolute expiry.
+   The reusable `get_current_user` dependency performs read-only authentication;
+   future unsafe CRUD handlers must validate CSRF/ownership before renewal/mutation.
+6. After login, fetch **GET /auth/csrf** again: rotation changed the CSRF token.
+   **POST /auth/logout** requires the current cookie, Origin/Referer,
+   application/json (even without a body) and X-CSRF-Token. It revokes and commits
+   before clearing the cookie, returning empty 204. A missing/invalid/expired or
+   replayed session returns generic 403 and changes no session/cookie; bootstrap
+   again when needed. Valid anonymous sessions may also be explicitly logged out.
+
+All /auth responses, including validation failures, unknown auth paths and method
+errors, have Cache-Control: no-store. Unsupported content types return 415;
+missing/invalid CSRF or browser source returns 403. Invalid request schemas/JSON
+return generic 422 without raw input, password, validation ctx or parser details.
+Storage failures return generic 503 and roll back. Unexpected auth failures return
+sanitized 500 without logging the exception or submitted input. Credential models
+use SecretStr and hide_input_in_errors; route-level handling is also necessary
+because FastAPI validation error dictionaries can otherwise contain raw inputs.
+Do not configure request-body/cookie/header logging in proxies or APM tools.
+
+### Private development activation
+
+There is NO activation route. `scripts.activate_development_user` is an operator-only
+CLI, not imported or called by endpoints. It refuses production configuration,
+the original database, arbitrary DB names, and missing explicit confirmation before
+DB access. It permits only `jobtracker_auth_fresh_9b2`, `jobtracker_auth_legacy_9b2`,
+and disposable `jobtracker_auth_ci`; actual PostgreSQL identity is checked too.
+
+Only after explicit approval, for an independently confirmed disposable test user:
+
+```bash
+APP_ENV=development MIGRATION_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m scripts.activate_development_user --user-id USER_ID --confirm-development-activation
+```
+
+The command sets email_verified_at and is_active transactionally. It does NOT
+verify a real mailbox. Find the intended test user ID through controlled operator
+access; registration intentionally does not return IDs or existence information.
+Never give production credentials to this tool or mislabel production as development.
+Adding future targets requires explicit review of its allowlist. Production needs
+an actual expiring, single-use mailbox verification process before public activation;
+it must bind verification and credential setup to the verified registrant and avoid
+activating an attacker-chosen password from an earlier pending registration.
+
+### Throttling and deployment limitations
+
+The process-local, bounded, thread-safe limiter allows:
+
+- CSRF bootstrap: 60 requests per IP per minute (reused sessions included).
+- Registration: 10 requests per IP per 15 minutes, before hashing.
+- Login: 30 requests per IP and 10 per normalized email per five minutes, before
+  password verification. Attempts are counted regardless of account existence or
+  outcome. 429 includes Retry-After and no-store. Keys are hashed in memory; the
+  limiter stores no plaintext email, password or session token.
+
+Windows reset on expiry/process restart. Limits are per worker; multiple workers
+require a shared limiter (for example at the trusted reverse proxy or a shared
+store), distributed abuse monitoring, and request body/connection limits. Temporary
+email-based throttling can be abused to delay another user's login, so tune limits
+and broader abuse controls for production. Proxy IP forwarding must be configured
+only for trusted proxies; never trust arbitrary X-Forwarded-For. CORS stays closed.
+Generic responses and comparable hashing reduce enumeration signals but do not
+promise identical latency, particularly across inserts, contention, and hash upgrades.
+
+No auth endpoints enforce application ownership yet. No PostgreSQL concurrency or
+mailbox-verification delivery is exercised by the SQLite suite. No PostgreSQL
+commands, server startup, migrations, activations or real registration were executed
+as part of this checkpoint's validation. email-validator==2.3.0 is now a dependency.
