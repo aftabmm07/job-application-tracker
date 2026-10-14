@@ -31,6 +31,7 @@ jobs:
 
     env:
       POSTGRES_PASSWORD: ci_test_password
+      APP_DATABASE_NAME: jobtracker_auth_ci
 
     steps:
       - name: Checkout repository

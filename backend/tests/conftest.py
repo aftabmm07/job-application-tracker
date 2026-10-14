@@ -1,8 +1,13 @@
 """Match PostgreSQL foreign-key enforcement in every SQLite-backed test."""
+import os
 import sqlite3
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+
+# Test collection imports app.main. This names its otherwise unused runtime
+# engine; API fixtures still override get_db with isolated SQLite connections.
+os.environ.setdefault("APP_DATABASE_NAME", "jobtracker_auth_ci")
 
 
 @event.listens_for(Engine, "connect")

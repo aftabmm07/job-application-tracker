@@ -97,9 +97,17 @@ until a separately approved migration is completed. Unit tests use isolated SQLi
 
 ### 5. Start the Backend Server
 
+Only after approval to use an isolated, migrated development database, select its
+name explicitly. Do not use the original database or preserved rehearsal databases
+without separate approval. The name below is an example approved development target,
+not permission to change it:
+
 ```bash
-python -m uvicorn app.main:app --reload
+APP_ENV=development APP_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m uvicorn app.main:app --reload
 ```
+
+Startup fails before engine creation when `APP_DATABASE_NAME` is missing, empty,
+invalid, or forbidden. There is no runtime default in development or production.
 
 The server runs at:
 
@@ -270,6 +278,13 @@ Uvicorn after changing them. Never commit `.env` or log configuration dictionari
 | `AUTH_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Required comma-separated exact HTTPS origins. No wildcard, credentials, path, trailing slash, query, fragment, or empty entries. |
 
 `POSTGRES_PASSWORD` remains required by the existing database configuration.
+`APP_DATABASE_NAME` is also required in every environment, with no fallback. Use
+1–63 lowercase ASCII letters, digits or underscores, starting with a letter. Names
+are not trimmed or truncated. `jobtracker_db`, `postgres`, `template0` and
+`template1` are forbidden before engine creation. Exported values take precedence
+over the private project-root `.env`. Production must explicitly configure its
+intended migrated database; no development target is selected automatically.
+These checks validate configuration, not migration state or permission to use a DB.
 `python-dotenv==1.2.4` is now explicitly declared, alongside `pwdlib[argon2]==0.3.1`.
 Origin schemes/hostnames are normalized and default ports removed; duplicates are
 removed. Origins refer to the browser-facing frontend (including its Vite port),
@@ -578,9 +593,9 @@ credentials, and never connect to PostgreSQL. They cover the complete flow below
 including the private activation helper with an explicitly allowed test target.
 
 For manual HTTP testing, use only a separately approved migrated development DB.
-`APP_DATABASE_NAME` now selects the API database; its legacy default is still
-`jobtracker_db` for compatibility, so an explicit override is mandatory for this
-branch. The existing private POSTGRES_PASSWORD/user/host settings remain unchanged.
+`APP_DATABASE_NAME` must explicitly select the API database; there is no legacy
+default, and `jobtracker_db` is rejected before engine creation. The existing
+private POSTGRES_PASSWORD/user/host settings remain unchanged.
 For example, AFTER approval to write the isolated target, from `backend/`:
 
 ```bash
