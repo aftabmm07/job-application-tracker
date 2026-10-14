@@ -3,6 +3,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.auth_config import get_auth_settings
 from app.database import engine, SessionLocal
 from app.models import JobApplication
 from app.schemas import (
@@ -10,6 +11,9 @@ from app.schemas import (
     JobApplicationResponse,
     JobApplicationUpdate,
 )
+
+# Validate security configuration at startup, before accepting requests.
+auth_settings = get_auth_settings()
 
 app = FastAPI(
     title="Job Application Tracker API",

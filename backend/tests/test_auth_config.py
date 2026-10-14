@@ -1,0 +1,150 @@
+import pytest
+
+from app.auth_config import AuthConfigurationError, AuthSettings
+
+
+def production_values():
+    return {
+        "APP_ENV": "production",
+        "CSRF_HMAC_SECRET": "test-only-key-not-for-deployment-1234567890",
+        "AUTH_ALLOWED_ORIGINS": "https://tracker.example.com",
+    }
+
+
+def test_development_defaults():
+    settings = AuthSettings.from_environment({})
+    assert settings.environment == "development"
+    assert settings.session_cookie_name == "session"
+    assert settings.session_cookie_secure is False
+    assert settings.session_absolute_timeout_seconds == 28800
+    assert settings.session_idle_timeout_seconds == 1800
+    assert len(settings.csrf_hmac_secret) == 32
+    assert settings.allowed_browser_origins == ("http://localhost:5173", "http://127.0.0.1:5173")
+    assert settings.csrf_hmac_secret != AuthSettings.from_environment({}).csrf_hmac_secret
+    assert "csrf_hmac_secret" not in repr(settings)
+
+
+def test_valid_production_defaults():
+    settings = AuthSettings.from_environment(production_values())
+    assert settings.session_cookie_secure is True
+    assert settings.session_cookie_name == "__Host-session"
+    assert settings.allowed_browser_origins == ("https://tracker.example.com",)
+    assert production_values()["CSRF_HMAC_SECRET"] not in repr(settings)
+
+
+def test_explicit_settings_and_origin_normalization():
+    settings = AuthSettings.from_environment({
+        "SESSION_COOKIE_NAME": "custom-session",
+        "SESSION_COOKIE_SECURE": "true",
+        "SESSION_ABSOLUTE_TIMEOUT_SECONDS": "3600",
+        "SESSION_IDLE_TIMEOUT_SECONDS": "600",
+        "CSRF_HMAC_SECRET": "test-only-development-secret-123456789",
+        "AUTH_ALLOWED_ORIGINS": "https://EXAMPLE.com:443, https://example.com,http://[::1]:5173",
+    })
+    assert settings.session_cookie_name == "custom-session"
+    assert settings.session_cookie_secure is True
+    assert settings.session_absolute_timeout_seconds == 3600
+    assert settings.session_idle_timeout_seconds == 600
+    assert settings.allowed_browser_origins == ("https://example.com", "http://[::1]:5173")
+
+
+@pytest.mark.parametrize("missing", ["CSRF_HMAC_SECRET", "AUTH_ALLOWED_ORIGINS"])
+def test_production_requires_explicit_secret_and_origins(missing):
+    values = production_values()
+    del values[missing]
+    with pytest.raises(AuthConfigurationError, match=missing):
+        AuthSettings.from_environment(values)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"APP_ENV": "prod"}, {"APP_ENV": ""}, {"SESSION_COOKIE_SECURE": "yes"},
+    {"SESSION_COOKIE_NAME": "bad;cookie"}, {"SESSION_COOKIE_NAME": ""},
+    {"SESSION_COOKIE_NAME": "__Host-session", "SESSION_COOKIE_SECURE": "false"},
+    {"SESSION_COOKIE_NAME": "__Secure-session", "SESSION_COOKIE_SECURE": "false"},
+    {"SESSION_ABSOLUTE_TIMEOUT_SECONDS": "0"}, {"SESSION_ABSOLUTE_TIMEOUT_SECONDS": "604801"},
+    {"SESSION_ABSOLUTE_TIMEOUT_SECONDS": "3.5"}, {"SESSION_IDLE_TIMEOUT_SECONDS": "-1"},
+    {"SESSION_IDLE_TIMEOUT_SECONDS": "86401"},
+    {"SESSION_ABSOLUTE_TIMEOUT_SECONDS": "10", "SESSION_IDLE_TIMEOUT_SECONDS": "11"},
+    {"CSRF_HMAC_SECRET": ""}, {"CSRF_HMAC_SECRET": "short-private-secret"},
+    {"CSRF_HMAC_SECRET": " " * 32}, {"CSRF_HMAC_SECRET": "x" * 1025},
+    {"CSRF_HMAC_SECRET": "\ud800" * 32},
+])
+def test_invalid_configuration_is_rejected(overrides):
+    with pytest.raises(AuthConfigurationError):
+        AuthSettings.from_environment(overrides)
+
+
+@pytest.mark.parametrize("origin", [
+    "", "*", "https://*.example.com", "null", "example.com", "ftp://example.com",
+    "https://example.com/", "https://example.com/path", "https://example.com?q=secret",
+    "https://example.com/#secret", "https://user:private@example.com",
+    "https://example.com:invalid", "https://example.com:70000", "https://example.com:0",
+    "https://example.com:", "https://bad host.com", "https://example.com,",
+    "https://example.com?", "https://example.com#", "\x00https://example.com",
+])
+def test_invalid_origins_are_rejected(origin):
+    with pytest.raises(AuthConfigurationError, match="AUTH_ALLOWED_ORIGINS"):
+        AuthSettings.from_environment({"AUTH_ALLOWED_ORIGINS": origin})
+
+
+@pytest.mark.parametrize("overrides", [
+    {"SESSION_COOKIE_SECURE": "false"}, {"SESSION_COOKIE_NAME": "session"},
+    {"AUTH_ALLOWED_ORIGINS": "http://tracker.example.com"}, {"CSRF_HMAC_SECRET": "short-secret"},
+])
+def test_production_rejects_insecure_configuration(overrides):
+    with pytest.raises(AuthConfigurationError):
+        AuthSettings.from_environment(production_values() | overrides)
+
+
+def test_configuration_errors_and_logs_do_not_reveal_values(caplog):
+    for name, value in [
+        ("CSRF_HMAC_SECRET", "private-secret-too-short"),
+        ("AUTH_ALLOWED_ORIGINS", "https://private:credential@example.com"),
+        ("SESSION_IDLE_TIMEOUT_SECONDS", "private-invalid-timeout"),
+    ]:
+        with pytest.raises(AuthConfigurationError) as error:
+            AuthSettings.from_environment({name: value})
+        assert value not in str(error.value)
+        assert value not in repr(error.value)
+        assert value not in caplog.text
+
+
+def test_cached_settings_respect_exported_environment(monkeypatch):
+    import app.auth_config as config
+
+    variables = (
+        "APP_ENV", "SESSION_COOKIE_NAME", "SESSION_COOKIE_SECURE",
+        "SESSION_ABSOLUTE_TIMEOUT_SECONDS", "SESSION_IDLE_TIMEOUT_SECONDS",
+        "CSRF_HMAC_SECRET", "AUTH_ALLOWED_ORIGINS",
+    )
+    for variable in variables:
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("SESSION_COOKIE_NAME", "exported-session")
+    calls = []
+    monkeypatch.setattr(config, "load_dotenv", lambda path, override: calls.append(override))
+    config.get_auth_settings.cache_clear()
+    try:
+        first = config.get_auth_settings()
+        assert first.session_cookie_name == "exported-session"
+        assert first is config.get_auth_settings()
+        assert calls == [False]
+    finally:
+        config.get_auth_settings.cache_clear()
+
+
+
+def test_application_import_rejects_insecure_production():
+    import os
+    import subprocess
+    import sys
+
+    environment = os.environ.copy()
+    environment.update(APP_ENV="production", SESSION_COOKIE_SECURE="false",
+                       POSTGRES_PASSWORD="test-only-not-used")
+    result = subprocess.run(
+        [sys.executable, "-c", "import app.main"], env=environment,
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode != 0
+    assert "SESSION_COOKIE_SECURE must be true in production" in result.stderr
+    assert "test-only-not-used" not in result.stderr
