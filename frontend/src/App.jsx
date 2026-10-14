@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react'
 import SummaryCards from './components/SummaryCards.jsx'
 import ApplicationsTable from './components/ApplicationsTable.jsx'
 import ApplicationForm from './components/ApplicationForm.jsx'
+import DeleteApplicationDialog from './components/DeleteApplicationDialog.jsx'
 import './App.css'
 
 function App() {
+  const [deletingApplication, setDeletingApplication] = useState(null)
   const [editingApplication, setEditingApplication] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
@@ -73,6 +75,18 @@ function App() {
         />
       )}
 
+      {deletingApplication && (
+        <DeleteApplicationDialog
+          application={deletingApplication}
+          onCancel={() => setDeletingApplication(null)}
+          onDeleted={() => {
+            setDeletingApplication(null)
+            setSuccessMessage('Application deleted successfully.')
+            setRequestNumber((number) => number + 1)
+          }}
+        />
+      )}
+
       {loading ? (
         <section className="state-panel" role="status">
           <h2>Loading applications…</h2>
@@ -105,6 +119,9 @@ function App() {
                 setSuccessMessage('')
                 setEditingApplication(application)
                 setShowForm(true)
+              }} onDelete={(application) => {
+                setSuccessMessage('')
+                setDeletingApplication(application)
               }} />
             )}
           </section>

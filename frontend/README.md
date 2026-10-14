@@ -1,6 +1,6 @@
 # Job Application Tracker Frontend
 
-React dashboard with add and edit application forms built with Vite and JavaScript. It fetches the existing
+React dashboard with add, edit, and confirmed deletion built with Vite and JavaScript. It fetches the existing
 `GET /applications` endpoint and derives all summary counts from the response.
 
 ## Local development
@@ -34,7 +34,7 @@ scrolls horizontally (including via keyboard focus).
 An empty database shows zero counts and an empty message. Stop FastAPI and reload
 to check the error state, then restart FastAPI and select **Try again**. Use browser
 network throttling to check the loading state. The dashboard fetches applications with GET and creates them with POST.
-Applications can also be updated with PATCH; deletion is not implemented.
+Applications can also be updated with PATCH and removed with a confirmed DELETE.
 
 `npm run preview` serves the production build but does not use the development
 proxy. A deployment must route `/applications` to the backend on the same origin.
@@ -93,3 +93,33 @@ Editing sends all six editable fields in a single PATCH payload. Required compan
 and title values are trimmed strings, status is a backend enum value, and optional
 fields contain a value or explicit `null`. IDs and creation timestamps are never
 included. Both modes use the same form, validation, styles, and status constants.
+
+## Deleting an application
+
+1. Start PostgreSQL and FastAPI using `../docs/setup.md`, then run `npm run dev`
+   from `frontend/` and open the printed URL. Choose a disposable application.
+2. Open DevTools Network and select its red **Delete** action. Check the company
+   and job title in the dialog. Opening it must not send DELETE; Cancel has focus.
+3. Cancel, reopen, and press Escape. Confirm no DELETE was sent, the row and counts
+   remain unchanged, and focus returns to the row's Delete button. Reopen and click
+   outside the dialog: it must stay open without sending a request.
+4. Confirm with **Delete Application**. Verify one DELETE `/applications/{id}` with
+   no request body, an empty 204 response, then GET `/applications`. Check success
+   feedback, the removed row, total reduced by one, and the corresponding status
+   count reduced by one. Focus returns to Add Application. Reload to verify removal.
+5. Test on a narrow viewport and using Tab/Shift+Tab. Throttle requests before
+   confirming to check the deleting message and disabled buttons; repeated clicks
+   must not send duplicate requests. Cancel and Escape are disabled while deleting.
+6. Stop FastAPI before confirming to test network feedback. The dialog must stay
+   open and allow Cancel. Restart FastAPI to retry. For 404/503, intercept the DELETE
+   request with a local testing tool and return the relevant status (for example
+   `{"detail":"Job application not found"}` or
+   `{"detail":"Database operation failed"}`). Check the readable error, retained
+   dialog, and available Cancel/retry controls; remove interception afterward.
+7. Delete the last disposable record to check zero counts and the empty state.
+   Verify Add Application and Edit still work normally.
+
+The confirmation uses a native modal dialog with no outside-click dismissal.
+Only the explicit confirmation button starts DELETE. Successful responses are not
+parsed as JSON because the backend returns 204 No Content. Counts always come from
+GET after the deletion; no optimistic statistics are inserted.
