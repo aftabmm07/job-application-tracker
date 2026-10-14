@@ -123,3 +123,30 @@ The confirmation uses a native modal dialog with no outside-click dismissal.
 Only the explicit confirmation button starts DELETE. Successful responses are not
 parsed as JSON because the backend returns 204 No Content. Counts always come from
 GET after the deletion; no optimistic statistics are inserted.
+
+## Searching and filtering applications
+
+Search matches company name or job title, case-insensitively, ignoring leading and
+trailing query whitespace. Status and search apply together. Filtering uses the
+already fetched list and sends no API requests. Summary cards always count all
+applications; the panel shows the matching count out of the full total. Filters
+remain selected after creating, editing, deleting, or retrying a fetch, and are
+applied to the refreshed records. Reloading the page resets filters.
+
+1. Start PostgreSQL and FastAPI using `../docs/setup.md`; run `npm run dev` from
+   `frontend/` and open the printed URL.
+2. Search for part of an existing company name, then part of a job title. Check
+   immediate updates, mixed-case queries, and leading/trailing spaces. A query
+   containing only spaces should match all records when All statuses is selected.
+3. Select each status and combine it with a search. Verify every row matches both
+   conditions, the “N of total applications” count is correct, and summary cards
+   stay unchanged. Check DevTools Network: filtering must not send requests.
+4. Enter a query with no matches: expect “No matching applications”. Select
+   **Clear filters**: expect an empty search, All statuses, and all records.
+   An entirely empty database should instead show “No applications yet”.
+5. With filters active, create a matching application, edit a matching row so it
+   no longer matches, and delete a disposable matching row. Verify retained
+   filters, refreshed matching counts, and global summaries after each operation.
+6. Tab through search, status, and Clear filters; check a narrow viewport. Confirm
+   loading, API failure/retry, and the existing creation/edit/deletion dialogs
+   continue to work.
