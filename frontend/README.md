@@ -1,6 +1,6 @@
 # Job Application Tracker Frontend
 
-React dashboard with add, edit, and confirmed deletion built with Vite and JavaScript. It fetches the existing
+React application with routed Applications and Analytics pages, add, edit, and confirmed deletion built with Vite and JavaScript. It fetches the existing
 `GET /applications` endpoint and derives all summary counts from the response.
 
 ## Local development
@@ -16,8 +16,9 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite. The development server proxies
-`/applications` to FastAPI, so no backend CORS changes are required.
+Open the local URL printed by Vite. The development server proxies API requests under `/applications` to FastAPI,
+so no backend CORS changes are required. HTML navigation requests are served by
+Vite so opening or refreshing the `/applications` page works.
 
 ## Checks
 
@@ -37,7 +38,10 @@ network throttling to check the loading state. The dashboard fetches application
 Applications can also be updated with PATCH and removed with a confirmed DELETE.
 
 `npm run preview` serves the production build but does not use the development
-proxy. A deployment must route `/applications` to the backend on the same origin.
+proxy. Production hosting must serve the React entry point for page navigation
+(including direct links and unknown paths), and route API requests to FastAPI.
+Because the page and API both use `/applications`, HTML document requests must
+be distinguished from API requests, as the Vite development proxy does.
 
 ## Adding an application
 
@@ -174,17 +178,59 @@ messages; a list of undated records displays only the monthly empty state.
 Manual browser checks:
 
 1. Start PostgreSQL and FastAPI using `../docs/setup.md`, then run `npm run dev`
-   from `frontend/` and open the printed URL.
+   from `frontend/`, open the printed URL, and select Analytics.
 2. Compare chart status counts and rates with your real records and the formulas
    above. Check an empty list or Saved-only list produces 0% rates.
 3. Check records from the same month in different years appear as separate bars
    in chronological order. Check undated records affect status counts but not bars.
 4. Hover chart slices/bars for counts and month/year tooltips. Use keyboard chart
    navigation and the status legend/monthly text counts to inspect the same data.
-5. Change table search/status filters, including a search with no matches; charts,
-   rates, and global summaries must stay unchanged and send no additional requests.
+5. On Applications, change search/status filters, including a search with no
+   matches; navigate back to Analytics. Charts and rates must remain global,
+   and navigation/filtering must send no additional application requests.
 6. Create an application, edit its status/date, and delete a disposable record.
    Verify charts/rates update after each GET refresh, with existing filters retained.
 7. Check mobile and desktop widths: charts resize and stack on smaller screens.
    Verify loading/error/retry still work. Check all-undated records show a monthly
    empty message, while an empty database shows both chart empty messages.
+
+## Routes and navigation
+
+React Router provides client-side navigation:
+
+- `/` redirects to `/applications` using history replacement.
+- `/applications` contains global summary cards, search/status filtering, and CRUD.
+- `/analytics` contains the existing charts and rate metrics using all records.
+- Unknown paths show Not Found with a link back to Applications.
+
+The shared layout has responsive top navigation, active page highlighting,
+keyboard focus styles, a skip link, and main-content focus/page titles on route
+changes. Internal links use Link/NavLink rather than full-page reloads.
+
+`App` owns applications, loading/error state, the refresh counter, and filter
+values. It stays mounted above the routes; pages receive data and refresh callbacks
+via props. CRUD success or Retry requests a new GET. Navigating between pages
+reuses the same list and preserves filters. Dialogs and success feedback belong to
+Applications. React StrictMode may show an extra aborted initial request during
+development; route changes themselves do not fetch. A full reload fetches again.
+
+Manual navigation checks:
+
+1. Start PostgreSQL and FastAPI, run `npm run dev` from `frontend/`, and open `/`.
+   Verify redirection to `/applications`, active navigation, summaries, and no charts.
+2. Open DevTools Network. Select Analytics; verify charts/rates and no table/CRUD
+   controls. Navigate back and forth, including browser Back/Forward: no document
+   reload or new GET should occur after the initial data load.
+3. Set search/status filters, navigate to Analytics, then return. Filters should
+   remain selected; analytics must use all records, including nonmatching ones.
+4. Create, edit, and confirm-delete a disposable application. Confirm the normal
+   GET refresh and success message, then visit Analytics to verify fresh data.
+   Check dialog Cancel/Escape and form validation still work.
+5. Directly open and reload `/applications` and `/analytics`. Both must render
+   React pages, while API requests still reach FastAPI through the proxy.
+6. Open `/does-not-exist`: check Not Found and the Back to Applications link.
+7. Stop FastAPI and reload Analytics: check its error and Retry. Restart FastAPI
+   and retry; verify charts. Throttle for loading, and check empty/all-undated data.
+8. At mobile and desktop widths, check navigation and chart resizing. Tab through
+   the skip link/navigation, confirm active links and page titles, and verify focus
+   reaches the new main content after route changes.

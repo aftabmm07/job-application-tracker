@@ -144,3 +144,19 @@ button:disabled { opacity: 0.65; cursor: wait; }
 @media (max-width: 48rem) {
   .analytics-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+.app-navigation { background: #fff; border-bottom: 1px solid #e2e8f0; }
+.navigation-inner { width: min(100%, 80rem); margin: 0 auto; padding: 1rem clamp(1rem, 4vw, 3rem); display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.app-brand { color: #0f172a; font-weight: 700; text-decoration: none; }
+.app-navigation nav { display: flex; gap: 0.5rem; }
+.app-navigation nav a { padding: 0.6rem 0.9rem; border-radius: 0.5rem; color: #475569; text-decoration: none; font-weight: 600; }
+.app-navigation nav a:hover { background: #f1f5f9; }
+.app-navigation nav a.active { background: #e0e7ff; color: #3730a3; }
+a:focus-visible { outline: 3px solid #6366f1; outline-offset: 3px; }
+.skip-link { position: absolute; top: 0.5rem; left: 1rem; transform: translateY(-200%); padding: 0.5rem 1rem; background: #fff; color: #3730a3; z-index: 10; }
+.skip-link:focus { transform: translateY(0); }
+.navigation-back { color: #4338ca; font-weight: 600; }
+@media (max-width: 36rem) {
+  .navigation-inner { flex-direction: column; align-items: stretch; }
+  .app-navigation nav a { flex: 1; text-align: center; }
+}
