@@ -443,3 +443,122 @@ preservation, drift rejection, metadata alignment, uniqueness, ownership/session
 FKs, activation checks, expiration checks, UTC handling, and disabled downgrades.
 CI additionally runs `alembic upgrade head` / `alembic check` against its disposable
 PostgreSQL service. Rehearsal databases are separate from all pytest databases.
+
+## Session and CSRF foundations (Phase 14, checkpoint 9B.3)
+
+These helpers are not attached to endpoints yet. Public health routes and existing
+application CRUD retain their current behavior. No registration, login, me, logout,
+frontend integration, PostgreSQL writes, or migrations are introduced here.
+
+### Session service and transaction boundary
+
+`app/session_service.py` operates on the existing AuthSession model. Construct
+`SessionService(db, auth_settings)` with a request-scoped SQLAlchemy Session.
+Tests inject a UTC clock; application code uses the UTC system clock.
+
+- `create()` issues an anonymous pre-login session; `create(user_id)` issues an
+  authenticated session only for an active, email-verified user. Password checking
+  and account authorization remain the future endpoint's responsibility.
+- Tokens use `secrets.token_urlsafe(32)` (256 random bits). Only the binary SHA-256
+  digest is attached to ORM records. Raw tokens exist transiently in an IssuedSession
+  result with repr disabled for its token; never serialize or log that object.
+- Anonymous absolute lifetime is capped at 15 minutes and the configured absolute
+  timeout, whichever is shorter. Its idle expiry is capped by that deadline.
+  Authenticated sessions use the configured absolute and idle timeouts.
+- `lookup(raw_token)` checks the database, active/verified user eligibility, absolute
+  and idle expiry, and timestamps. The exact expiry instant is invalid. Lookup does
+  not update activity or delete expired records. Invalid/missing token syntax fails
+  closed without querying. Disabling an account invalidates its sessions immediately.
+- `renew(raw_token)` conditionally updates last activity and idle expiry only while
+  the stored row remains valid. Idle expiry is capped by the original absolute
+  deadline. It cannot recreate a revoked row, revive an expired session, or move
+  activity backwards when an older request arrives late.
+- `revoke(raw_token)` deletes that session only; repeated revocation is harmless.
+- `rotate_for_login(anonymous_token, user_id)` requires a live anonymous session,
+  locks it on PostgreSQL, issues a fresh authenticated token, and removes the old
+  row. Both changes belong to one transaction. Existing authenticated sessions are
+  not accepted as anonymous login sessions. Repeated consumption is rejected.
+
+The service flushes changes but **never commits automatically**. Call
+`commit_session_changes(db)` only when the entire endpoint operation is ready.
+Set cookies only after that call succeeds. On any service database failure, the
+transaction rolls back and a generic SessionStorageError is raised without driver
+messages or token values. Commit failures also roll back. Future endpoints must
+translate this error to a generic 503 with Cache-Control: no-store, and must not
+continue using a provisional token. A caller rollback restores the old anonymous
+session and removes the uncommitted replacement during failed rotation. Rollbacks
+apply to the request's whole unit of work; do not share its Session across requests.
+
+### Cookie and response helpers
+
+`app/session_http.py` exposes `set_session_cookie`, `clear_session_cookie`, and
+`no_store`. Cookies are HttpOnly, SameSite=Lax, Path=/, with no Domain attribute.
+Secure follows validated environment configuration; production uses __Host-session.
+Cookie Max-Age reflects remaining absolute lifetime, not a fresh full timeout.
+Server-side expiry is always authoritative, even if the browser still sends a
+cookie. Revocation must commit before clearing a cookie. Cookie helpers mark the
+response Cache-Control: no-store. Future auth endpoints must also apply no_store
+on other successes and failures. Never place raw session tokens in JSON, URLs,
+localStorage, logs, or diagnostics; only the HttpOnly cookie carries them to clients.
+
+### CSRF and request validation
+
+`app/csrf.py` derives a session-bound CSRF token as the hexadecimal HMAC-SHA-256 of
+`b"csrf:v1:" + raw_session_token` under CSRF_HMAC_SECRET. The token is reproducible
+for the current session, independently authenticated, and stored nowhere in the
+session table. `verify_csrf_token` compares well-formed tokens with compare_digest.
+Rotation changes the CSRF token; a token from another session or secret is invalid.
+Only the CSRF token, never the HMAC secret or raw bearer token, may be returned by
+the future bootstrap endpoint. CSRF token responses must not be cached or logged.
+
+For unsafe requests, `require_csrf(request, session, settings)` requires:
+
+1. One exact Origin matching configured browser origins, after canonical host and
+   default-port normalization. Do not infer trust from Host or forwarded headers.
+2. Only when Origin is entirely absent, one absolute HTTP(S) Referer whose origin
+   exactly matches. Referer paths/queries are allowed, but credentials, fragments,
+   controls, whitespace and backslashes are rejected. Missing both headers fails
+   closed. A present empty, null, malformed or untrusted Origin never falls back
+   to Referer. Duplicate security headers are rejected.
+3. Content-Type application/json, optionally with UTF-8 charset. Other media types,
+   encodings and parameters return 415. This requirement includes future bodyless
+   DELETE/logout requests: their clients must still explicitly set application/json.
+4. A live session row obtained from SessionService.lookup, matching the cookie's
+   token hash, and one valid X-CSRF-Token header. Anonymous pre-login sessions are
+   supported. Missing/invalid/cross-session tokens or expired sessions return 403.
+
+Security exceptions carry generic messages and Cache-Control: no-store. GET, HEAD
+and OPTIONS are not CSRF-gated by require_csrf; they must never perform application
+mutations. The future bootstrap endpoint should call require_trusted_origin
+explicitly before creating an anonymous session. SameSite is defense in depth,
+not a replacement for token/origin validation. XSS remains outside CSRF protection.
+
+### Future endpoint integration order
+
+For an unsafe application request: lookup without renewal, validate CSRF/origin/
+content type, require an authenticated eligible user and enforce query ownership,
+perform the operation, renew activity, then commit the unit of work. Invalid CSRF
+requests must not prolong sessions. Roll back if any check or operation fails.
+
+For future login: lookup the anonymous session, validate CSRF and input, verify
+credentials, rotate_for_login, commit, then set the new cookie and return only public
+user data. Obtain a fresh CSRF token for the rotated session. For logout: validate
+CSRF, revoke, commit, then clear the cookie. Auth response/error handling must always
+apply no-store. None of these endpoints exist in this checkpoint.
+
+In Phase 15, React will fetch a CSRF bootstrap response, keep the token in memory,
+and send X-CSRF-Token with application/json on unsafe same-origin requests. Browser
+cookies remain automatic and HttpOnly. Auth paths will need the development proxy;
+trusted origins remain the browser-facing Vite host/port, not the upstream target.
+
+### Validation and limitations
+
+`test_sessions.py` and `test_csrf.py` cover random generation, hashed-only storage,
+active/anonymous sessions, boundary expiry, renewal/capping, revocation and rotation,
+transaction rollback/commit failures, sanitized exceptions, cookies/no-store, HMAC
+binding, constant-time comparison, strict origins/Referer, duplicate headers, and
+content types. They use SQLite or direct Request/Response objects and never change
+PostgreSQL. PostgreSQL row-lock behavior is implemented but concurrent transactions
+are not exercised by SQLite. Expired-row cleanup and endpoint-level throttling are
+future work; expiry enforcement does not depend on cleanup. Reuse the existing
+backend pytest command; no dependencies or schema changes are required here.

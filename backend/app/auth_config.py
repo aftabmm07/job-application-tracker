@@ -26,7 +26,7 @@ def _positive_integer(values, name, default, maximum):
     return value
 
 
-def _origin(value, production):
+def normalize_browser_origin(value, production):
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -117,7 +117,7 @@ class AuthSettings:
         entries = [entry.strip() for entry in origins.split(",")]
         if any(not entry for entry in entries):
             raise AuthConfigurationError("AUTH_ALLOWED_ORIGINS must not contain empty entries")
-        allowed_origins = tuple(dict.fromkeys(_origin(entry, production) for entry in entries))
+        allowed_origins = tuple(dict.fromkeys(normalize_browser_origin(entry, production) for entry in entries))
         return cls(environment, name, secure, absolute, idle, secret_bytes, allowed_origins)
 
 
