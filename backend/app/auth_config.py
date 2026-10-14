@@ -68,6 +68,8 @@ class AuthSettings:
     session_idle_timeout_seconds: int
     csrf_hmac_secret: bytes = field(repr=False)
     allowed_browser_origins: tuple[str, ...]
+    password_hash_max_concurrency: int = 2
+    json_max_body_bytes: int = 65536
 
     @classmethod
     def from_environment(cls, values: Mapping[str, str]):
@@ -118,7 +120,10 @@ class AuthSettings:
         if any(not entry for entry in entries):
             raise AuthConfigurationError("AUTH_ALLOWED_ORIGINS must not contain empty entries")
         allowed_origins = tuple(dict.fromkeys(normalize_browser_origin(entry, production) for entry in entries))
-        return cls(environment, name, secure, absolute, idle, secret_bytes, allowed_origins)
+        hash_concurrency = _positive_integer(values, "PASSWORD_HASH_MAX_CONCURRENCY", 2, 8)
+        body_bytes = _positive_integer(values, "JSON_MAX_BODY_BYTES", 65536, 1048576)
+        return cls(environment, name, secure, absolute, idle, secret_bytes, allowed_origins,
+                   hash_concurrency, body_bytes)
 
 
 @lru_cache(maxsize=1)

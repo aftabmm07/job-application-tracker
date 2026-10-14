@@ -276,6 +276,8 @@ Uvicorn after changing them. Never commit `.env` or log configuration dictionari
 | `SESSION_IDLE_TIMEOUT_SECONDS` | `1800` (30 minutes) | Optional; integer 1–86400 (24 hours), never greater than the absolute timeout. |
 | `CSRF_HMAC_SECRET` | Fresh random 32-byte process-local key when omitted | Required; 32–1024 UTF-8 bytes, not whitespace-only. Supply a cryptographically random secret from your secret manager. |
 | `AUTH_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Required comma-separated exact HTTPS origins. No wildcard, credentials, path, trailing slash, query, fragment, or empty entries. |
+| `PASSWORD_HASH_MAX_CONCURRENCY` | `2` | Optional integer 1–8. Maximum concurrent password operations per process; restart after changing. |
+| `JSON_MAX_BODY_BYTES` | `65536` (64 KiB) | Optional integer 1–1048576. Maximum mutation body size in bytes, before JSON parsing; restart after changing. |
 
 `POSTGRES_PASSWORD` remains required by the existing database configuration.
 `APP_DATABASE_NAME` is also required in every environment, with no fallback. Use
@@ -704,6 +706,60 @@ and broader abuse controls for production. Proxy IP forwarding must be configure
 only for trusted proxies; never trust arbitrary X-Forwarded-For. CORS stays closed.
 Generic responses and comparable hashing reduce enumeration signals but do not
 promise identical latency, particularly across inserts, contention, and hash upgrades.
+
+### Authentication resource limits (security fix 61.2B)
+
+All password hashing and verification helpers share one process-local, nonblocking
+gate, including dummy verification for unknown accounts and verification that
+upgrades a hash. The default allows two operations, approximately 128 MiB of Argon2
+working memory plus application overhead. Argon2id remains at 64 MiB per operation,
+three passes and parallelism four. The gate does not queue: when full, auth endpoints
+return generic 503 with Retry-After: 1 and Cache-Control: no-store. Existing attempt
+throttling still returns 429 independently. Capacity rejection does not create a
+user, rotate a session, or issue a cookie.
+
+Auth endpoints remain synchronous FastAPI worker functions, so password work does
+not execute on the event loop. A finally block releases each permit after success,
+failure or cancellation unwinds the actual operation. Cancellation of a caller
+waiting for a worker does not interrupt Argon2 or release the worker's permit early;
+the running operation retains capacity until it finishes. The hash-upgrade path
+holds one permit throughout verification and replacement hashing.
+
+The ASGI request-body middleware limits POST, PUT, PATCH and DELETE bodies across
+the API, including registration, login, logout and application mutations. It rejects
+an oversized Content-Length immediately and counts actual incoming bytes even when
+the header is missing or understated, or the upload is chunked. It stops receiving
+at the first excess chunk and returns generic 413 with no-store, before routing,
+JSON parsing or database dependencies. Invalid/duplicate Content-Length headers
+receive generic 400. HTTP/1 rejection responses request connection closure rather
+than draining the upload; HTTP/2 responses omit the Connection header.
+
+Accepted bodies are buffered only up to JSON_MAX_BODY_BYTES and replayed to the
+existing handlers. This is a whole JSON-body byte limit, not a character limit;
+JSON syntax and multibyte Unicode count toward it. With the default 64 KiB limit,
+very large job descriptions must be shortened. Small JSON requests and existing
+CSRF, authentication and ownership checks retain their behavior. Safe-method and
+non-HTTP traffic bypass this mutation-body middleware.
+
+These are per-process safeguards, not complete deployment resource controls. N
+workers can run N times the configured password concurrency. Choose workers and
+capacity together after benchmarking CPU, memory and latency; keep shared abuse
+throttling at a trusted proxy or store. The hashing gate does not bound requests
+waiting for general worker threads or database connections. A server may already
+have allocated an incoming ASGI chunk, and many simultaneous bounded uploads can
+still consume memory. Production therefore also needs proxy body limits at or
+below the application limit, upload/header timeouts, connection/concurrency limits,
+and overload monitoring. No in-process body-size limit prevents slow uploads.
+Reject unsupported request compression at the proxy; this middleware does not
+decompress request bodies. Never log body contents, cookies, CSRF tokens or secrets.
+
+`test_password_limits.py` covers saturation, shared capacity, real Argon2 behavior,
+failure/cancellation release and cancellation while a worker remains active.
+`test_request_limits.py` supplies ASGI streaming chunks directly to verify bounded
+reads and pre-handler rejection. Auth integration tests cover generic overload
+responses, dummy verification, worker-thread execution, early body rejection and
+small chunked registration; the existing full suite covers CRUD and security
+regressions. These tests use SQLite overrides and require no PostgreSQL changes.
 
 At checkpoint 9B.4, application ownership was not enforced; see 9B.5 below. No PostgreSQL concurrency or
 mailbox-verification delivery is exercised by the SQLite suite. No PostgreSQL

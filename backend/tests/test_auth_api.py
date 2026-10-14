@@ -538,3 +538,82 @@ def test_explicit_api_database_override_does_not_connect():
     assert result.returncode == 0
     assert result.stdout.strip() == 'jobtracker_auth_fresh_9b2'
     assert 'test-only-unused' not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('kind', ['register', 'known-login', 'unknown-login'])
+def test_password_capacity_failure_is_generic_and_retryable(ctx, monkeypatch, kind, caplog):
+    import app.passwords as passwords
+    if kind == 'known-login':
+        add_user(ctx)
+    bootstrap(ctx)
+    raw = ctx.client.cookies.get('session')
+    gate = passwords.PasswordWorkLimiter(1)
+    monkeypatch.setattr(passwords, 'get_password_work_limiter', lambda: gate)
+    path = '/auth/register' if kind == 'register' else '/auth/login'
+    original = passwords._password_hash
+    fake = SimpleNamespace(hash=Mock(), verify_and_update=Mock())
+    with patch.object(passwords, '_password_hash', fake), gate.acquire():
+        response = post(ctx, path)
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Authentication service busy. Please try again later.'}
+    assert response.headers['retry-after'] == '1'
+    assert response.headers['cache-control'] == 'no-store'
+    assert 'set-cookie' not in response.headers
+    fake.hash.assert_not_called()
+    fake.verify_and_update.assert_not_called()  # Includes the unknown-account dummy path.
+    for secret in (PASSWORD, raw, ctx.settings.csrf_hmac_secret.hex()):
+        assert secret not in response.text + caplog.text
+    assert passwords._password_hash is original
+    assert count(ctx, AuthSession) == 1
+    assert count(ctx, User) == (1 if kind == 'known-login' else 0)
+    # Rejection must leave the anonymous session usable for a subsequent attempt.
+    assert post(ctx, path).status_code == (202 if kind == 'register' else 200 if kind == 'known-login' else 401)
+
+
+def test_unknown_account_password_work_runs_in_worker_thread(ctx, monkeypatch):
+    import asyncio
+    import app.passwords as passwords
+    bootstrap(ctx)
+    calls = []
+
+    def verify(*args):
+        with pytest.raises(RuntimeError, match='no running event loop'):
+            asyncio.get_running_loop()
+        calls.append(True)
+        return False, None
+
+    monkeypatch.setattr(passwords, '_password_hash', SimpleNamespace(verify_and_update=verify))
+    assert post(ctx, '/auth/login').status_code == 401
+    assert calls == [True]
+
+
+@pytest.mark.parametrize('method, path', [
+    ('POST', '/auth/register'), ('POST', '/auth/login'), ('POST', '/auth/logout'),
+    ('POST', '/applications'), ('PATCH', '/applications/1'), ('DELETE', '/applications/1'),
+])
+@pytest.mark.parametrize('streamed', [False, True])
+def test_large_mutation_rejected_before_json_or_authentication(ctx, method, path, streamed, caplog):
+    from app.main import auth_settings
+    from app.session_service import SessionService
+    body = b'private-body-marker' + b'x' * auth_settings.json_max_body_bytes
+    with patch('starlette.requests.Request.json') as parse, patch.object(SessionService, 'lookup') as lookup:
+        content = iter([body[:10], body[10:]]) if streamed else body
+        response = ctx.client.request(method, path, content=content, headers={'Content-Type': 'application/json'})
+    assert response.status_code == 413
+    assert response.json() == {'detail': 'Request body too large'}
+    assert response.headers['cache-control'] == 'no-store'
+    assert 'set-cookie' not in response.headers
+    assert 'private-body-marker' not in response.text + caplog.text
+    parse.assert_not_called()
+    lookup.assert_not_called()
+    assert count(ctx, User) == count(ctx, AuthSession) == 0
+
+
+def test_small_chunked_registration_preserves_csrf_and_json(ctx):
+    import json
+    bootstrap(ctx)
+    body = json.dumps({'email': EMAIL, 'password': PASSWORD}).encode()
+    response = ctx.client.post('/auth/register', content=iter([body[:10], body[10:]]), headers=headers(ctx))
+    assert response.status_code == 202
+    assert count(ctx, User) == 1
+    assert not ctx.db.scalar(select(User)).is_active

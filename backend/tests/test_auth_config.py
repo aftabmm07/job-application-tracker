@@ -18,6 +18,8 @@ def test_development_defaults():
     assert settings.session_cookie_secure is False
     assert settings.session_absolute_timeout_seconds == 28800
     assert settings.session_idle_timeout_seconds == 1800
+    assert settings.password_hash_max_concurrency == 2
+    assert settings.json_max_body_bytes == 65536
     assert len(settings.csrf_hmac_secret) == 32
     assert settings.allowed_browser_origins == ("http://localhost:5173", "http://127.0.0.1:5173")
     assert settings.csrf_hmac_secret != AuthSettings.from_environment({}).csrf_hmac_secret
@@ -116,6 +118,7 @@ def test_cached_settings_respect_exported_environment(monkeypatch):
         "APP_ENV", "SESSION_COOKIE_NAME", "SESSION_COOKIE_SECURE",
         "SESSION_ABSOLUTE_TIMEOUT_SECONDS", "SESSION_IDLE_TIMEOUT_SECONDS",
         "CSRF_HMAC_SECRET", "AUTH_ALLOWED_ORIGINS",
+        "PASSWORD_HASH_MAX_CONCURRENCY", "JSON_MAX_BODY_BYTES",
     )
     for variable in variables:
         monkeypatch.delenv(variable, raising=False)
@@ -148,3 +151,26 @@ def test_application_import_rejects_insecure_production():
     assert result.returncode != 0
     assert "SESSION_COOKIE_SECURE must be true in production" in result.stderr
     assert "test-only-not-used" not in result.stderr
+
+
+@pytest.mark.parametrize("values, expected", [
+    ({"PASSWORD_HASH_MAX_CONCURRENCY": "1", "JSON_MAX_BODY_BYTES": "1"}, (1, 1)),
+    ({"PASSWORD_HASH_MAX_CONCURRENCY": "8", "JSON_MAX_BODY_BYTES": "1048576"}, (8, 1048576)),
+])
+def test_resource_limit_configuration(values, expected):
+    settings = AuthSettings.from_environment(values)
+    assert (settings.password_hash_max_concurrency, settings.json_max_body_bytes) == expected
+
+
+@pytest.mark.parametrize("name, value", [
+    ("PASSWORD_HASH_MAX_CONCURRENCY", "0"), ("PASSWORD_HASH_MAX_CONCURRENCY", "9"),
+    ("JSON_MAX_BODY_BYTES", "0"), ("JSON_MAX_BODY_BYTES", "1048577"),
+    ("PASSWORD_HASH_MAX_CONCURRENCY", "private-invalid-marker"),
+    ("JSON_MAX_BODY_BYTES", "private-invalid-marker"),
+    ("JSON_MAX_BODY_BYTES", "-1"), ("PASSWORD_HASH_MAX_CONCURRENCY", "1.5"),
+])
+def test_invalid_resource_limits_are_sanitized(name, value, caplog):
+    with pytest.raises(AuthConfigurationError) as error:
+        AuthSettings.from_environment({name: value})
+    assert name in str(error.value)
+    assert "private-invalid-marker" not in str(error.value) + caplog.text

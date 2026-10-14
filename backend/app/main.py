@@ -7,6 +7,7 @@ from app.auth_config import AuthSettings, get_auth_settings
 from app.auth_routes import router as auth_router
 from app.dependencies import get_db
 from app.session_http import no_store
+from app.request_limits import RequestBodyLimitMiddleware
 from app.database import engine
 from app.models import JobApplication, User
 from app.auth_dependencies import auth_error, get_auth_db, get_current_user, get_mutation_user
@@ -25,6 +26,8 @@ app = FastAPI(
     description="Backend API for managing job applications",
     version="0.1.0"
 )
+
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=auth_settings.json_max_body_bytes)
 
 
 app.include_router(auth_router)

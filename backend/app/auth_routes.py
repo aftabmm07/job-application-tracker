@@ -16,7 +16,7 @@ from app.auth_limits import AuthRateLimiter, get_auth_limiter
 from app.auth_schemas import Credentials, CsrfResponse, IdentityResponse, RegistrationResponse
 from app.csrf import create_csrf_token, require_csrf, require_json_content_type, require_trusted_origin
 from app.models import User
-from app.passwords import hash_password, verify_and_upgrade_password
+from app.passwords import PasswordWorkBusy, hash_password, verify_and_upgrade_password
 from app.session_http import clear_session_cookie, no_store, set_session_cookie
 from app.session_service import InvalidSessionError, SessionService, SessionStorageError, commit_session_changes
 
@@ -39,6 +39,11 @@ class AuthRoute(APIRoute):
                 response = JSONResponse({"detail": "Invalid authentication request"}, status_code=422)
             except HTTPException as error:
                 response = JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=error.headers)
+            except PasswordWorkBusy:
+                response = JSONResponse(
+                    {"detail": "Authentication service busy. Please try again later."},
+                    status_code=503, headers={"Retry-After": "1"},
+                )
             except (SessionStorageError, SQLAlchemyError):
                 response = JSONResponse({"detail": "Authentication service unavailable"}, status_code=503)
             except Exception:
