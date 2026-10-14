@@ -486,15 +486,21 @@ Tests inject a UTC clock; application code uses the UTC system clock.
   and idle expiry, and timestamps. The exact expiry instant is invalid. Lookup does
   not update activity or delete expired records. Invalid/missing token syntax fails
   closed without querying. Disabling an account invalidates its sessions immediately.
-- `renew(raw_token)` conditionally updates last activity and idle expiry only while
-  the stored row remains valid. Idle expiry is capped by the original absolute
+- `renew(raw_token)` locks the session before sampling fresh UTC time, then
+  conditionally updates last activity and idle expiry only while the stored row
+  remains valid. Idle expiry is capped by the original absolute
   deadline. It cannot recreate a revoked row, revive an expired session, or move
   activity backwards when an older request arrives late.
-- `revoke(raw_token)` deletes that session only; repeated revocation is harmless.
+- `revoke(raw_token)` locks and rechecks the live session before deleting it;
+  missing, expired, disabled-user or already-revoked sessions return False.
+  Repeated revocation is harmless; expired rows belong to explicit cleanup.
 - `rotate_for_login(anonymous_token, user_id)` requires a live anonymous session,
   locks it on PostgreSQL, issues a fresh authenticated token, and removes the old
   row. Both changes belong to one transaction. Existing authenticated sessions are
   not accepted as anonymous login sessions. Repeated consumption is rejected.
+- `cleanup_expired(batch_size=100)` is explicit maintenance, never part of a
+  normal request. It removes at most one batch of absolutely or idle-expired
+  sessions; see the operational guidance below. It does not commit automatically.
 
 The service flushes changes but **never commits automatically**. Call
 `commit_session_changes(db)` only when the entire endpoint operation is ready.
@@ -576,9 +582,9 @@ transaction rollback/commit failures, sanitized exceptions, cookies/no-store, HM
 binding, constant-time comparison, strict origins/Referer, duplicate headers, and
 content types. They use SQLite or direct Request/Response objects and never change
 PostgreSQL. PostgreSQL row-lock behavior is implemented but concurrent transactions
-are not exercised by SQLite. Expired-row cleanup and endpoint-level throttling are
-future work; expiry enforcement does not depend on cleanup. Reuse the existing
-backend pytest command; no dependencies or schema changes are required here.
+are not exercised by SQLite. Endpoint throttling and explicit expired-session
+cleanup were added in later checkpoints; expiry enforcement does not depend on
+cleanup. Reuse the existing backend pytest command.
 
 ## Authentication API (Phase 14, checkpoint 9B.4)
 
@@ -618,7 +624,7 @@ Origin header, or use the existing automated TestClient suite.
    HttpOnly cookie. With an existing valid anonymous/authenticated session it
    returns its CSRF token without setting another cookie, creating another row,
    rotating it, or extending activity. Expired/unknown cookies get fresh random
-   anonymous sessions. Expired rows await separate cleanup. Raw bearer tokens
+   anonymous sessions. Expired rows await explicit scheduled cleanup. Raw bearer tokens
    never appear in JSON. Keep the cookie jar and returned CSRF token.
 2. **POST /auth/register** with application/json, Origin/Referer, the cookie and
    X-CSRF-Token. JSON is `{"email":"person@example.com","password":"..."}`. Email
@@ -825,7 +831,8 @@ is evaluated cannot turn it into an unscoped mutation. PostgreSQL serializes row
 updates; disjoint partial updates do not overwrite omitted fields. There is no
 optimistic version column: concurrent edits to the same field remain last-write-wins.
 
-Conditional session renewal checks expiry/revocation again before commit. A logout
+Session renewal locks the row and checks fresh UTC time before applying its update.
+A logout
 that wins before renewal causes rollback; a logout waiting on renewal's row lock
 can complete after that already-authorized request commits. Account deactivation
 concurrent with an in-flight request is not a global cancellation mechanism: a
@@ -855,3 +862,112 @@ verified ownership backfill are still required. Do not publicly deploy this bran
    when appropriate; never blindly replay a mutation that may have committed.
 5. Continue deriving summaries and charts from the full owner-scoped API list.
    The current frontend was deliberately not modified and is not yet auth-ready.
+
+## Strict session expiration and explicit cleanup (security fix 61.2C)
+
+### Fresh time after locking
+
+Renewal (`/auth/me` and successful application CRUD), login rotation, and logout
+revocation now acquire the session lock before sampling UTC wall-clock time.
+PostgreSQL uses SELECT FOR UPDATE with a refreshed ORM row. A waiter sees the
+committed replacement row, or no row after concurrent deletion/rotation; cached
+identity-map data is not used to authorize the operation. Both absolute and idle
+expiry are enforced, with equality treated as expired. Conditional mutation SQL
+retains the live-session and active/verified-user predicates. Login rotation also
+requires an anonymous session; it cannot consume an authenticated session.
+
+Lookup remains read-only and rechecks time after SQL returns, so a stalled read
+cannot return an already-expired session. Login rotation issues and deletes within
+one transaction. Absolute expiry is never extended by renewal. Logout refuses to
+clear a cookie when the final live-session revocation fails. Existing commit-before-
+cookie ordering, CSRF, ownership filters and error sanitization remain in place.
+
+The authorization decision occurs using fresh time while holding the session
+lock. It is not a guarantee that commit or response delivery occurs before the
+deadline: an already-authorized transaction may finish later. Locks remain held
+until commit/rollback, so subsequent renewals, revocation and cleanup serialize
+against that decision. Account deactivation is still not cancellation of all
+in-flight requests. Keep application clocks synchronized across hosts; PostgreSQL
+transaction-start now() is deliberately not used for these decisions.
+
+Before session writes/cleanup, PostgreSQL transaction-local lock_timeout is 2 s
+and statement_timeout is 5 s. These fixed baseline limits apply to subsequent
+statements in that transaction and reset on commit/rollback. Timeout/deadlock or
+other SQLAlchemy failures roll back the complete unit of work and produce the
+existing sanitized storage error (503 at HTTP boundaries). They do not bound total
+transaction lifetime, connection-pool waits, or unrelated statements executed
+before entering the session write operation. Review them with deployment workload
+requirements rather than disabling them to hide contention.
+
+SQLite has no row-level FOR UPDATE or SKIP LOCKED. Before session writes or cleanup,
+the service sets the connection's busy_timeout to 2 s and executes a no-row UPDATE
+to acquire the writer reservation before sampling time. This changes no records.
+An incompatible read-to-write upgrade can fail with SQLITE_BUSY rather than wait;
+it fails closed through rollback. SQLite serializes writers for the whole database,
+so its successful concurrency tests do not prove PostgreSQL row-lock scheduling.
+
+### Cleanup operation and scheduling
+
+`SessionService.cleanup_expired(batch_size=100)` accepts an integer batch size
+from 1 through 1000. It selects only sessions whose absolute OR idle deadline is
+at or before the current time, locks at most the requested number of candidates,
+then rechecks expiry with fresh time in the DELETE predicate. PostgreSQL uses
+FOR UPDATE SKIP LOCKED to leave busy rows for a later run. Cleanup cannot delete
+a row renewed before it acquires that row's lock. If cleanup deletes first, the
+waiting renewal finds no row and cannot recreate it. A backwards clock change
+between selection and deletion is handled conservatively by the second check.
+
+The existing absolute/idle expiration indexes support candidate selection; no
+index or schema changes and no migration are needed. Batch size bounds deletions
+and row locks, not the planner's scanned rows; statement_timeout bounds long SQL.
+No users, applications, NULL-owned legacy records or backup data are selected or
+deleted. Inactive but unexpired sessions are retained until their time deadline.
+Expired authenticated and anonymous rows follow the same cleanup rules.
+
+Cleanup is a service function, not a public endpoint, startup hook, or automatic
+background loop. An operator-approved scheduler wrapper can call it as follows,
+using an explicitly approved migrated database engine and existing auth settings:
+
+```python
+from sqlalchemy.orm import Session
+from app.session_service import SessionService, commit_session_changes
+
+# approved_engine and settings must be supplied by reviewed operator configuration.
+with Session(approved_engine, autoflush=False) as db:
+    removed = SessionService(db, settings).cleanup_expired(batch_size=100)
+    commit_session_changes(db)
+# Log only removed (a count), never session rows, tokens or database URLs.
+```
+
+Obtain approval for the exact target and wrapper command before executing against
+PostgreSQL. Never target jobtracker_db, the restored backup database, or preserved
+rehearsal databases. There is intentionally no default cleanup target or runnable
+command that silently connects to one. This checkpoint has not run cleanup against
+any PostgreSQL database.
+
+For production, schedule a bounded job every 5 minutes (for example with a systemd
+timer or CronJob). Start with one batch per invocation, monitor duration, failures
+and the expired-row backlog, and tune batch size/frequency to traffic. If multiple
+batches are necessary, impose a finite job budget and commit each batch using a
+fresh dedicated Session; never loop indefinitely in one transaction. Always close
+or roll back failed sessions promptly. Skipped/busy rows may make a batch smaller
+than requested; a small or empty batch does not prove the entire backlog is empty.
+Repeated runs are idempotent and active sessions do not require cleanup to expire
+correctly. Provision only the permissions needed by the reviewed maintenance role.
+
+### Validation and PostgreSQL gaps
+
+SQLite tests cover exact boundaries, post-lock clocks, stale read results,
+revocation/renewal ordering, rotation token invalidation, bounded/idempotent cleanup,
+active-session and application preservation, rollback, and independent waiting
+writers. PostgreSQL SQL compilation/mocks verify FOR UPDATE, SKIP LOCKED and local
+timeout configuration without opening a PostgreSQL connection.
+
+The existing opt-in PostgreSQL ownership check remains sequential. Before production,
+rehearse independent PostgreSQL connections on a newly approved disposable database:
+hold a session lock across idle/absolute expiry; race login rotation consumers;
+race renewal with logout and cleanup in both commit orders; verify SKIP LOCKED
+returns promptly; and verify lock/statement timeout rollback. Run under the intended
+READ COMMITTED isolation and test configured alternatives separately. Do not infer
+those PostgreSQL guarantees solely from SQLite tests or SQL compilation. No such
+PostgreSQL write/rehearsal has been performed in this checkpoint.

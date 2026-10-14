@@ -158,7 +158,8 @@ def me(request: Request, user: User = Depends(get_current_user),
 def logout(request: Request, db: Session = Depends(get_auth_db),
            settings: AuthSettings = Depends(get_auth_settings)):
     service, record, raw = unsafe_session(request, db, settings)
-    service.revoke(raw)
+    if not service.revoke(raw):
+        auth_error(403, "Request security validation failed")
     commit_session_changes(db)
     response = Response(status_code=204)
     clear_session_cookie(response, settings)

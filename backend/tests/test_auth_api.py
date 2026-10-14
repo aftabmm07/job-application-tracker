@@ -617,3 +617,47 @@ def test_small_chunked_registration_preserves_csrf_and_json(ctx):
     assert response.status_code == 202
     assert count(ctx, User) == 1
     assert not ctx.db.scalar(select(User)).is_active
+
+
+def test_logout_failed_final_revocation_does_not_clear_cookie(ctx):
+    from app.session_service import SessionService
+    sign_in(ctx)
+    raw = ctx.client.cookies.get('session')
+    with patch.object(SessionService, 'revoke', return_value=False):
+        response = post(ctx, '/auth/logout', {})
+    assert response.status_code == 403
+    assert response.json() == {'detail': 'Request security validation failed'}
+    assert 'set-cookie' not in response.headers
+    assert response.headers['cache-control'] == 'no-store'
+    assert ctx.client.cookies.get('session') == raw
+
+
+@pytest.mark.parametrize('path, expected', [('/auth/login', 401), ('/auth/me', 401), ('/auth/logout', 403)])
+def test_auth_expiry_after_lock_does_not_issue_or_clear_cookie(ctx, path, expected):
+    from app.session_service import SessionService
+    if path == '/auth/login':
+        add_user(ctx)
+        bootstrap(ctx)
+    else:
+        sign_in(ctx)
+    raw = ctx.client.cookies.get('session')
+    now = SessionService._now
+    lock = SessionService._lock_session
+    after_lock = [None]
+
+    def clock(self):
+        return after_lock[0] if after_lock[0] is not None else now(self)
+
+    def delayed_lock(self, digest):
+        row = lock(self, digest)
+        after_lock[0] = min(row.expires_at, row.idle_expires_at)
+        return row
+
+    with patch.object(SessionService, '_now', clock), patch.object(SessionService, '_lock_session', delayed_lock):
+        response = ctx.client.get(path) if path == '/auth/me' else post(ctx, path)
+    assert response.status_code == expected
+    assert 'set-cookie' not in response.headers
+    assert response.headers['cache-control'] == 'no-store'
+    assert ctx.client.cookies.get('session') == raw
+    assert count(ctx, AuthSession) == 1
+    assert raw not in response.text and PASSWORD not in response.text

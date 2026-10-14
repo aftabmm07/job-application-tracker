@@ -2,11 +2,13 @@ from datetime import UTC, datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 import hashlib
 import traceback
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.sql.dml import Delete
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 
@@ -203,7 +205,14 @@ def test_rotation_failure_rolls_back_both_insert_and_deletion(db, settings, user
     old = current.create()
     commit_session_changes(db)
     user_id = user.id  # Resolve the expired ORM attribute before mocking DB access.
-    with patch.object(db, 'execute', side_effect=SQLAlchemyError('private driver error')):
+    execute = db.execute
+
+    def fail_on_delete(statement, *args, **kwargs):
+        if isinstance(statement, Delete):
+            raise SQLAlchemyError('private driver error')
+        return execute(statement, *args, **kwargs)
+
+    with patch.object(db, 'execute', side_effect=fail_on_delete):
         with pytest.raises(SessionStorageError, match='Session storage is unavailable'):
             current.rotate_for_login(old.raw_token, user_id)
     assert current.lookup(old.raw_token) is not None
@@ -286,3 +295,198 @@ def test_cannot_set_expired_cookie(db, settings):
     with pytest.raises(ValueError, match='expired'):
         set_session_cookie(response, issued, settings, now=issued.expires_at)
     assert 'set-cookie' not in response.headers
+
+
+@pytest.mark.parametrize('operation', ['renew', 'revoke', 'rotate_for_login'])
+@pytest.mark.parametrize('boundary', ['absolute', 'idle'])
+def test_expiration_is_checked_after_row_lock_returns(db, user, operation, boundary):
+    settings = AuthSettings.from_environment({'SESSION_ABSOLUTE_TIMEOUT_SECONDS': '120',
+                                               'SESSION_IDLE_TIMEOUT_SECONDS': '60'})
+    issued = service(db, settings).create()
+    record = db.get(AuthSession, issued.session_id)
+    if boundary == 'absolute':
+        record.idle_expires_at = record.expires_at
+    db.commit()
+    deadline = record.expires_at if boundary == 'absolute' else record.idle_expires_at
+    current_time = [deadline - timedelta(seconds=1)]
+    clock_reads = []
+
+    def clock():
+        clock_reads.append(current_time[0])
+        return current_time[0]
+
+    scalar = db.scalar
+
+    def delayed_lock(statement, *args, **kwargs):
+        result = scalar(statement, *args, **kwargs)
+        if getattr(statement, '_for_update_arg', None) is not None:
+            assert clock_reads == []  # No pre-lock time may authorize this write.
+            current_time[0] = deadline
+        return result
+
+    current = SessionService(db, settings, clock=clock)
+    user_id = user.id
+    with patch.object(db, 'scalar', side_effect=delayed_lock):
+        if operation == 'rotate_for_login':
+            with pytest.raises(InvalidSessionError):
+                current.rotate_for_login(issued.raw_token, user_id)
+        else:
+            result = getattr(current, operation)(issued.raw_token)
+            assert result is (None if operation == 'renew' else False)
+    db.rollback()
+    assert clock_reads == [deadline]
+    assert db.scalar(select(func.count()).select_from(AuthSession)) == 1
+    assert db.get(AuthSession, issued.session_id).last_activity_at == NOW
+
+
+def test_lookup_rechecks_expiry_after_a_stalled_read(db, settings):
+    issued = service(db, settings).create()
+    db.commit()
+    times = iter([NOW, NOW + timedelta(minutes=15)])
+    current = SessionService(db, settings, clock=lambda: next(times))
+    assert current.lookup(issued.raw_token) is None
+
+
+def test_renewal_uses_post_lock_activity_time(db, settings):
+    issued = service(db, settings).create()
+    db.commit()
+    time = [NOW]
+    scalar = db.scalar
+
+    def delayed_lock(statement, *args, **kwargs):
+        result = scalar(statement, *args, **kwargs)
+        if getattr(statement, '_for_update_arg', None) is not None:
+            time[0] = NOW + timedelta(minutes=5)
+        return result
+
+    with patch.object(db, 'scalar', side_effect=delayed_lock):
+        renewed = SessionService(db, settings, clock=lambda: time[0]).renew(issued.raw_token)
+    assert renewed.last_activity_at == NOW + timedelta(minutes=5)
+    assert renewed.expires_at == issued.expires_at
+
+
+@pytest.mark.parametrize('operation', ['renew', 'revoke'])
+def test_old_token_after_rotation_cannot_modify_new_session(db, settings, user, operation):
+    current = service(db, settings)
+    old = current.create()
+    db.commit()
+    new = current.rotate_for_login(old.raw_token, user.id)
+    db.commit()
+    result = getattr(current, operation)(old.raw_token)
+    assert result is (None if operation == 'renew' else False)
+    assert current.lookup(new.raw_token).user_id == user.id
+
+
+def test_postgres_locking_cleanup_and_timeouts_without_connecting(settings):
+    db = Mock()
+    db.get_bind.return_value.dialect.name = 'postgresql'
+    db.scalar.return_value = None
+    current = service(db, settings)
+    assert current.renew('a' * 43) is None
+    settings_sql = str(db.execute.call_args.args[0])
+    assert "set_config('lock_timeout', '2000ms', true)" in settings_sql
+    assert "set_config('statement_timeout', '5000ms', true)" in settings_sql
+    lock_sql = str(db.scalar.call_args.args[0].compile(dialect=postgresql.dialect()))
+    assert 'FOR UPDATE' in lock_sql
+    db.scalars.return_value.all.return_value = []
+    assert current.cleanup_expired(batch_size=7) == 0
+    statement = db.scalars.call_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert 'FOR UPDATE SKIP LOCKED' in str(compiled)
+    assert 7 in compiled.params.values()
+    assert 'now()' not in str(compiled)
+
+
+@pytest.mark.parametrize('operation', ['renew', 'revoke', 'rotate_for_login', 'cleanup_expired'])
+def test_write_lock_failure_rolls_back_safely(db, settings, operation):
+    current = service(db, settings)
+    issued = current.create()
+    db.commit()
+    with patch.object(current, '_prepare_write', side_effect=SQLAlchemyError('private lock error')), \
+            patch.object(db, 'rollback', wraps=db.rollback) as rollback:
+        with pytest.raises(SessionStorageError) as error:
+            if operation == 'cleanup_expired':
+                current.cleanup_expired()
+            elif operation == 'rotate_for_login':
+                current.rotate_for_login(issued.raw_token, 1)
+            else:
+                getattr(current, operation)(issued.raw_token)
+        rollback.assert_called_once()
+    assert 'private lock error' not in ''.join(traceback.format_exception(error.value))
+    assert current.lookup(issued.raw_token) is not None
+
+
+def test_cleanup_only_removes_expired_sessions_and_preserves_other_tables(db, settings, user):
+    from app.models import JobApplication
+    current = service(db, settings)
+    expired_anonymous = current.create()
+    idle_expired = current.create(user.id)
+    live = service(db, settings, NOW + timedelta(minutes=29)).create(user.id)
+    db.add(JobApplication(company_name='Preserved', job_title='Engineer', user_id=user.id))
+    db.add(JobApplication(company_name='Legacy', job_title='Unowned'))
+    db.commit()
+    assert service(db, settings, NOW + timedelta(minutes=30)).cleanup_expired() == 2
+    db.commit()
+    assert db.get(AuthSession, expired_anonymous.session_id) is None
+    assert db.get(AuthSession, idle_expired.session_id) is None
+    assert db.get(AuthSession, live.session_id) is not None
+    assert db.scalar(select(func.count()).select_from(User)) == 1
+    assert db.scalar(select(func.count()).select_from(JobApplication)) == 2
+
+
+def test_cleanup_absolute_boundary_and_unexpired_anonymous_session(db, settings):
+    expired = service(db, settings).create()
+    live = service(db, settings, NOW + timedelta(seconds=1)).create()
+    db.commit()
+    assert service(db, settings, NOW + timedelta(seconds=899)).cleanup_expired() == 0
+    assert service(db, settings, NOW + timedelta(seconds=900)).cleanup_expired() == 1
+    db.commit()
+    assert db.get(AuthSession, expired.session_id) is None
+    assert db.get(AuthSession, live.session_id) is not None
+
+
+def test_cleanup_is_bounded_idempotent_and_rollbackable(db, settings):
+    for _ in range(5):
+        service(db, settings).create()
+    db.commit()
+    current = service(db, settings, NOW + timedelta(minutes=15))
+    assert current.cleanup_expired(batch_size=2) == 2
+    db.rollback()
+    assert db.scalar(select(func.count()).select_from(AuthSession)) == 5
+    counts = []
+    for _ in range(4):
+        counts.append(current.cleanup_expired(batch_size=2))
+        db.commit()
+    assert counts == [2, 2, 1, 0]
+
+
+@pytest.mark.parametrize('batch_size', [0, -1, 1001, True, '10', None])
+def test_cleanup_rejects_invalid_batch_before_accessing_db(db, settings, batch_size):
+    with patch.object(db, 'get_bind') as bind, pytest.raises(ValueError, match='batch size'):
+        service(db, settings).cleanup_expired(batch_size)
+    bind.assert_not_called()
+
+
+def test_cleanup_rechecks_after_selection_if_clock_moves_backwards(db, settings):
+    issued = service(db, settings).create()
+    db.commit()
+    times = iter([NOW + timedelta(minutes=15), NOW])
+    current = SessionService(db, settings, clock=lambda: next(times))
+    assert current.cleanup_expired() == 0
+    db.commit()
+    assert db.get(AuthSession, issued.session_id) is not None
+
+
+def test_cleanup_delete_failure_rolls_back(db, settings):
+    issued = service(db, settings).create()
+    db.commit()
+    scalars = db.scalars
+
+    def fail_on_delete(statement, *args, **kwargs):
+        if isinstance(statement, Delete):
+            raise SQLAlchemyError('private cleanup failure')
+        return scalars(statement, *args, **kwargs)
+
+    with patch.object(db, 'scalars', side_effect=fail_on_delete), pytest.raises(SessionStorageError):
+        service(db, settings, NOW + timedelta(minutes=15)).cleanup_expired()
+    assert db.get(AuthSession, issued.session_id) is not None
