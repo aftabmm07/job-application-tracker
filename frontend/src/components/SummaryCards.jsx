@@ -1,9 +1,9 @@
-const statuses = ['saved', 'applied', 'interview', 'offer', 'rejected']
+import { applicationStatuses } from '../applicationStatuses.js'
 
 function SummaryCards({ applications }) {
   const cards = [
     { label: 'Total applications', count: applications.length },
-    ...statuses.map((status) => ({
+    ...applicationStatuses.map((status) => ({
       label: status[0].toUpperCase() + status.slice(1),
       count: applications.filter((application) => application.status === status).length,
     })),
