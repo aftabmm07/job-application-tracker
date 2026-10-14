@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import SummaryCards from './components/SummaryCards.jsx'
+import ApplicationAnalytics from './components/ApplicationAnalytics.jsx'
 import ApplicationsTable from './components/ApplicationsTable.jsx'
 import ApplicationForm from './components/ApplicationForm.jsx'
 import DeleteApplicationDialog from './components/DeleteApplicationDialog.jsx'
@@ -122,6 +123,7 @@ function App() {
         <>
           <p className="summary-note">Summary counts include all applications, regardless of filters.</p>
           <SummaryCards applications={applications} />
+          <ApplicationAnalytics applications={applications} />
           <section className="applications-panel" aria-labelledby="applications-heading">
             <div className="panel-header">
               <h2 id="applications-heading">Applications</h2>
