@@ -123,3 +123,24 @@ button:disabled { opacity: 0.65; cursor: wait; }
   .application-filters { grid-template-columns: minmax(0, 1fr); padding: 1rem; }
   .application-filters > button { justify-self: start; }
 }
+
+.analytics-section { margin-bottom: 2rem; }
+.analytics-section h2 { margin: 0 0 0.5rem; font-size: 1.5rem; }
+.analytics-description { margin: 0 0 1rem; color: #475569; font-size: 0.875rem; }
+.rate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 0 0 1rem; }
+.analytics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.analytics-card { min-width: 0; padding: 1.25rem; background: #fff; border: 1px solid #e2e8f0; border-radius: 0.75rem; }
+.analytics-card h3 { margin: 0; font-size: 1.125rem; }
+.analytics-card > p { color: #475569; font-size: 0.875rem; margin: 0.5rem 0 1rem; }
+.chart-container { width: 100%; height: 17rem; min-width: 0; }
+.chart-empty { min-height: 10rem; display: grid; place-items: center; text-align: center; color: #475569; padding: 1rem; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin: 1rem 0 0; font-size: 0.875rem; }
+.chart-legend > div, .chart-legend dt { display: flex; align-items: center; gap: 0.4rem; }
+.chart-legend dd { margin: 0; font-weight: 600; }
+.legend-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; }
+.chart-data { margin-top: 1rem; font-size: 0.875rem; color: #475569; }
+.chart-data summary { cursor: pointer; }
+.chart-data summary:focus-visible, .recharts-wrapper:focus-visible { outline: 3px solid #6366f1; outline-offset: 3px; }
+@media (max-width: 48rem) {
+  .analytics-grid { grid-template-columns: minmax(0, 1fr); }
+}

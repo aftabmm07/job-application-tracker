@@ -150,3 +150,41 @@ applied to the refreshed records. Reloading the page resets filters.
 6. Tab through search, status, and Clear filters; check a narrow viewport. Confirm
    loading, API failure/retry, and the existing creation/edit/deletion dialogs
    continue to work.
+
+## Application analytics
+
+Recharts is installed as a frontend dependency. Analytics use the complete GET
+response, not filtered rows, and refresh after creation, editing, and deletion.
+No analytics requests or sample data are added. Total applications remains in the
+existing summary cards; the analytics section adds interview and offer rates.
+
+- Denominator: Applied + Interview + Offer + Rejected; Saved is excluded.
+- Interview rate: (Interview + Offer) / denominator × 100.
+- Offer rate: Offer / denominator × 100.
+- A zero denominator yields 0%. Rates are rounded to one decimal place.
+
+These are current-status-based indicators, not historical conversion rates,
+because status history is not stored. Status distribution includes every record.
+Monthly activity uses `application_date` (YYYY-MM-DD), grouped by YYYY-MM and
+sorted chronologically with both month and year labels. Undated records are
+excluded from monthly activity but remain in status counts and rate calculations.
+Only months containing records are shown. Empty data displays status/monthly
+messages; a list of undated records displays only the monthly empty state.
+
+Manual browser checks:
+
+1. Start PostgreSQL and FastAPI using `../docs/setup.md`, then run `npm run dev`
+   from `frontend/` and open the printed URL.
+2. Compare chart status counts and rates with your real records and the formulas
+   above. Check an empty list or Saved-only list produces 0% rates.
+3. Check records from the same month in different years appear as separate bars
+   in chronological order. Check undated records affect status counts but not bars.
+4. Hover chart slices/bars for counts and month/year tooltips. Use keyboard chart
+   navigation and the status legend/monthly text counts to inspect the same data.
+5. Change table search/status filters, including a search with no matches; charts,
+   rates, and global summaries must stay unchanged and send no additional requests.
+6. Create an application, edit its status/date, and delete a disposable record.
+   Verify charts/rates update after each GET refresh, with existing filters retained.
+7. Check mobile and desktop widths: charts resize and stack on smaller screens.
+   Verify loading/error/retry still work. Check all-undated records show a monthly
+   empty message, while an empty database shows both chart empty messages.
