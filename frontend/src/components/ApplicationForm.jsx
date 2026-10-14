@@ -10,10 +10,12 @@ const fieldLabels = {
   job_description: 'Job description',
 }
 
-function AddApplicationForm({ onCancel, onCreated }) {
+function ApplicationForm({ application = null, onCancel, onSaved }) {
+  const isEditing = application !== null
   const dialogRef = useRef(null)
   const errorRef = useRef(null)
   const pendingRef = useRef(false)
+  const savedRef = useRef(false)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
 
@@ -24,7 +26,8 @@ function AddApplicationForm({ onCancel, onCreated }) {
     dialog.querySelector('input').focus()
     return () => {
       dialog.close()
-      previousFocus?.focus()
+      if (!savedRef.current && previousFocus?.isConnected) previousFocus.focus()
+      else document.getElementById('add-application-button')?.focus()
     }
   }, [])
 
@@ -46,7 +49,8 @@ function AddApplicationForm({ onCancel, onCreated }) {
       return
     }
 
-    // These optional fields are nullable in JobApplicationCreate.
+    // These optional fields are nullable in both create and update schemas.
+    // PATCH accepts all six fields; explicit null clears an optional value.
     const payload = {
       company_name: companyName,
       job_title: jobTitle,
@@ -59,8 +63,8 @@ function AddApplicationForm({ onCancel, onCreated }) {
     pendingRef.current = true
     setPending(true)
     try {
-      const response = await fetch('/applications', {
-        method: 'POST',
+      const response = await fetch(isEditing ? `/applications/${application.id}` : '/applications', {
+        method: isEditing ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
@@ -80,7 +84,8 @@ function AddApplicationForm({ onCancel, onCreated }) {
         throw new Error(message)
       }
 
-      onCreated()
+      savedRef.current = true
+      onSaved()
     } catch (error) {
       setError(error.message || 'Unable to reach the server. Please try again.')
     } finally {
@@ -90,12 +95,12 @@ function AddApplicationForm({ onCancel, onCreated }) {
   }
 
   return (
-    <dialog className="application-dialog" ref={dialogRef} aria-labelledby="add-application-heading"
+    <dialog className="application-dialog" ref={dialogRef} aria-labelledby="application-form-heading"
       aria-describedby="form-instructions" onCancel={(event) => {
         event.preventDefault()
         if (!pendingRef.current) onCancel()
       }}>
-      <h2 id="add-application-heading">Add new application</h2>
+      <h2 id="application-form-heading">{isEditing ? 'Edit application' : 'Add new application'}</h2>
       <p id="form-instructions">Fields marked * are required.</p>
       <form onSubmit={handleSubmit} aria-busy={pending}>
         {error && <p className="form-error" role="alert" tabIndex={-1} ref={errorRef}>{error}</p>}
@@ -103,19 +108,19 @@ function AddApplicationForm({ onCancel, onCreated }) {
           <legend className="visually-hidden">Application details</legend>
           <div className="form-field">
             <label htmlFor="company-name">Company name *</label>
-            <input id="company-name" name="company_name" required maxLength={150} autoComplete="organization" />
+            <input id="company-name" name="company_name" required maxLength={150} autoComplete="organization" defaultValue={application?.company_name ?? ''} />
           </div>
           <div className="form-field">
             <label htmlFor="job-title">Job title *</label>
-            <input id="job-title" name="job_title" required maxLength={200} />
+            <input id="job-title" name="job_title" required maxLength={200} defaultValue={application?.job_title ?? ''} />
           </div>
           <div className="form-field">
             <label htmlFor="location">Location</label>
-            <input id="location" name="location" maxLength={150} />
+            <input id="location" name="location" maxLength={150} defaultValue={application?.location ?? ''} />
           </div>
           <div className="form-field">
             <label htmlFor="application-status">Status</label>
-            <select id="application-status" name="status" defaultValue="saved">
+            <select id="application-status" name="status" defaultValue={application?.status ?? 'saved'}>
               {applicationStatuses.map((status) => (
                 <option key={status} value={status}>{status[0].toUpperCase() + status.slice(1)}</option>
               ))}
@@ -123,21 +128,21 @@ function AddApplicationForm({ onCancel, onCreated }) {
           </div>
           <div className="form-field">
             <label htmlFor="application-date">Application date</label>
-            <input id="application-date" name="application_date" type="date" />
+            <input id="application-date" name="application_date" type="date" defaultValue={application?.application_date ?? ''} />
           </div>
           <div className="form-field form-field-wide">
             <label htmlFor="job-description">Job description</label>
-            <textarea id="job-description" name="job_description" rows={5} />
+            <textarea id="job-description" name="job_description" rows={5} defaultValue={application?.job_description ?? ''} />
           </div>
         </fieldset>
         <p className="saving-message" role="status">{pending ? 'Saving application…' : ''}</p>
         <div className="form-actions">
           <button type="button" className="secondary-button" disabled={pending} onClick={onCancel}>Cancel</button>
-          <button type="submit" disabled={pending}>{pending ? 'Saving…' : 'Save application'}</button>
+          <button type="submit" disabled={pending}>{pending ? 'Saving…' : isEditing ? 'Save changes' : 'Save application'}</button>
         </div>
       </form>
     </dialog>
   )
 }
 
-export default AddApplicationForm
+export default ApplicationForm

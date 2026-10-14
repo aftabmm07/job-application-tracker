@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import SummaryCards from './components/SummaryCards.jsx'
 import ApplicationsTable from './components/ApplicationsTable.jsx'
-import AddApplicationForm from './components/AddApplicationForm.jsx'
+import ApplicationForm from './components/ApplicationForm.jsx'
 import './App.css'
 
 function App() {
+  const [editingApplication, setEditingApplication] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
   const [applications, setApplications] = useState([])
@@ -50,8 +51,9 @@ function App() {
         <p className="eyebrow">Your career, organized</p>
         <h1>Job Application Tracker</h1>
         <p>Keep an overview of your applications and your next opportunities.</p>
-        <button type="button" className="add-application-button" onClick={() => {
+        <button type="button" id="add-application-button" className="add-application-button" onClick={() => {
           setSuccessMessage('')
+          setEditingApplication(null)
           setShowForm(true)
         }}>
           + Add Application
@@ -60,11 +62,12 @@ function App() {
 
       {successMessage && <p className="success-message" role="status">{successMessage}</p>}
       {showForm && (
-        <AddApplicationForm
+        <ApplicationForm
+          application={editingApplication}
           onCancel={() => setShowForm(false)}
-          onCreated={() => {
+          onSaved={() => {
             setShowForm(false)
-            setSuccessMessage('Application added successfully.')
+            setSuccessMessage(editingApplication ? 'Application updated successfully.' : 'Application added successfully.')
             setRequestNumber((number) => number + 1)
           }}
         />
@@ -98,7 +101,11 @@ function App() {
                 <p>Your saved applications will appear here when available.</p>
               </div>
             ) : (
-              <ApplicationsTable applications={applications} />
+              <ApplicationsTable applications={applications} onEdit={(application) => {
+                setSuccessMessage('')
+                setEditingApplication(application)
+                setShowForm(true)
+              }} />
             )}
           </section>
         </>

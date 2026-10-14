@@ -8,7 +8,7 @@ function formatDate(date) {
   )
 }
 
-function ApplicationsTable({ applications }) {
+function ApplicationsTable({ applications, onEdit }) {
   return (
     <div className="table-scroll" tabIndex={0} role="region" aria-label="Job applications; scroll horizontally on smaller screens">
       <table>
@@ -20,6 +20,7 @@ function ApplicationsTable({ applications }) {
             <th scope="col">Location</th>
             <th scope="col">Status</th>
             <th scope="col">Application date</th>
+            <th scope="col">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -34,6 +35,13 @@ function ApplicationsTable({ applications }) {
                 </span>
               </td>
               <td>{formatDate(application.application_date)}</td>
+              <td>
+                <button type="button" className="secondary-button"
+                  aria-label={`Edit ${application.job_title} at ${application.company_name}`}
+                  onClick={() => onEdit(application)}>
+                  Edit
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
