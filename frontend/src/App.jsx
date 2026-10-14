@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import SummaryCards from './components/SummaryCards.jsx'
 import ApplicationsTable from './components/ApplicationsTable.jsx'
+import AddApplicationForm from './components/AddApplicationForm.jsx'
 import './App.css'
 
 function App() {
+  const [showForm, setShowForm] = useState(false)
+  const [successMessage, setSuccessMessage] = useState('')
   const [applications, setApplications] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -47,7 +50,25 @@ function App() {
         <p className="eyebrow">Your career, organized</p>
         <h1>Job Application Tracker</h1>
         <p>Keep an overview of your applications and your next opportunities.</p>
+        <button type="button" className="add-application-button" onClick={() => {
+          setSuccessMessage('')
+          setShowForm(true)
+        }}>
+          + Add Application
+        </button>
       </header>
+
+      {successMessage && <p className="success-message" role="status">{successMessage}</p>}
+      {showForm && (
+        <AddApplicationForm
+          onCancel={() => setShowForm(false)}
+          onCreated={() => {
+            setShowForm(false)
+            setSuccessMessage('Application added successfully.')
+            setRequestNumber((number) => number + 1)
+          }}
+        />
+      )}
 
       {loading ? (
         <section className="state-panel" role="status">
