@@ -104,3 +104,51 @@ def test_migration_target_is_explicit_and_blocks_original(monkeypatch, name):
         monkeypatch.setenv("MIGRATION_DATABASE_NAME", name)
     with pytest.raises(RuntimeError, match="explicit non-original"):
         migration_url()
+
+
+@pytest.mark.parametrize('kind', ['BIGINT', 'SMALLINT', 'INT', 'CHAR(150)'])
+def test_incompatible_legacy_type_blocks_stamp_and_upgrade_without_changing_rows(connection, kind):
+    id_type = kind if kind != 'CHAR(150)' else 'INTEGER'
+    company_type = kind if kind == 'CHAR(150)' else 'VARCHAR(150)'
+    connection.execute(text(f"""CREATE TABLE job_applications (
+        id {id_type} NOT NULL PRIMARY KEY,
+        company_name {company_type} NOT NULL, job_title VARCHAR(200) NOT NULL,
+        location VARCHAR(150), status VARCHAR(30) NOT NULL, application_date DATE,
+        job_description TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+    )"""))
+    connection.execute(text("""INSERT INTO job_applications (id, company_name, job_title, status)
+        VALUES (7, 'Preserved', 'Original', 'saved')"""))
+    before = connection.execute(text('SELECT * FROM job_applications')).all()
+    config = configuration(connection)
+    for operation in (lambda: command.stamp(config, BASELINE), lambda: command.upgrade(config, 'head')):
+        with pytest.raises(RuntimeError, match='baseline type/nullability'):
+            operation()
+        assert 'alembic_version' not in inspect(connection).get_table_names()
+        assert connection.execute(text('SELECT * FROM job_applications')).all() == before
+
+
+def test_schema_drift_after_verified_stamp_blocks_upgrade(connection):
+    config = create_legacy(connection)
+    command.stamp(config, BASELINE)
+    connection.execute(text('ALTER TABLE job_applications ADD COLUMN unexpected TEXT'))
+    with pytest.raises(RuntimeError):
+        command.upgrade(config, 'head')
+    assert connection.scalar(text('SELECT version_num FROM alembic_version')) == BASELINE
+    assert 'users' not in inspect(connection).get_table_names()
+    assert connection.scalar(text('SELECT count(*) FROM job_applications')) == 2
+
+
+@pytest.mark.parametrize('destination', [BASELINE, 'head'])
+def test_empty_database_cannot_be_stamped_without_schema(connection, destination):
+    with pytest.raises(RuntimeError):
+        command.stamp(configuration(connection), destination)
+    if 'alembic_version' in inspect(connection).get_table_names():
+        assert connection.scalar(text('SELECT count(*) FROM alembic_version')) == 0
+
+
+def test_stamped_baseline_cannot_be_stamped_to_unapplied_head(connection):
+    config = create_legacy(connection)
+    command.stamp(config, BASELINE)
+    with pytest.raises(RuntimeError, match='verified'):
+        command.stamp(config, 'head')
+    assert connection.scalar(text('SELECT version_num FROM alembic_version')) == BASELINE

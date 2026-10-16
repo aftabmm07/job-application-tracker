@@ -7,7 +7,7 @@
 - Visual Studio Code
 - Docker Desktop with WSL 2 integration enabled
 - Ubuntu WSL
-- Python 3.14 with pip and venv support
+- CPython 3.14 with pip and venv support (CI and this lock validated on 3.14.4)
 
 ## Clone the Repository
 
@@ -78,10 +78,76 @@ source ~/python-envs/job-tracker/bin/activate
 ### 3. Install Dependencies
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes --only-binary=:all: -r requirements-bootstrap.txt
+python -m pip install --require-hashes --only-binary=:all: -r requirements.txt
+python -m pip check
 ```
 
 Dependencies include FastAPI, Uvicorn, Pytest, HTTPX, SQLAlchemy, Psycopg, and python-dotenv.
+
+`requirements.in` contains exact direct runtime/test pins. `requirements.txt` is
+the generated pip-tools lock for all 41 direct/transitive packages, with SHA-256
+artifact hashes. `requirements-bootstrap.txt` pins the universal pip 26.2 wheel
+with its hash. Local setup and GitHub Actions use these same three commands;
+neither performs a floating pip upgrade or resolves fresh application versions.
+Wheel-only installation prevents build backends from installing unlocked source-
+build dependencies. Use a clean virtual environment when moving to a new lock:
+pip installation does not remove unrelated packages already present.
+
+The supported lock target is standard CPython 3.14 on Linux/WSL; validation used
+3.14.4 on x86_64. It is not a native-Windows, macOS, or free-threaded Python lock.
+Although hashes cover multiple published artifacts, platform-dependent dependency
+selection was resolved on Linux. Do not remove wheel-only or hash checks to work
+around an unsupported platform; review and generate a separate lock instead.
+
+### Intentional dependency refresh and audit
+
+Do not edit generated application pins/hashes by hand. Use a separate maintainer
+environment so pip-tools and pip-audit do not pollute the backend test environment.
+From `backend/`, create it with the documented Python 3.14 interpreter:
+
+```bash
+python3 -m venv ~/python-envs/job-tracker-lock-tools
+~/python-envs/job-tracker-lock-tools/bin/python -m pip install --require-hashes --only-binary=:all: -r requirements-bootstrap.txt
+~/python-envs/job-tracker-lock-tools/bin/python -m pip install pip-tools==7.6.2 pip-audit==2.10.1
+~/python-envs/job-tracker-lock-tools/bin/python -m piptools compile --generate-hashes --reuse-hashes --no-emit-index-url --no-emit-trusted-host --allow-unsafe --strip-extras --output-file=requirements.txt requirements.in
+```
+
+The compile command reuses existing exact pins rather than broadly upgrading.
+To update a direct dependency, review its release/security notes, change that exact
+pin in requirements.in, then compile. To intentionally update a transitive package,
+use `--upgrade-package PACKAGE==REVIEWED_VERSION` with the compile command. Avoid
+an unrestricted `--upgrade`. Review the entire resulting diff, install the new lock
+in a clean backend environment, run pip check and the complete pytest suite, and
+repeat the advisory audit. Lock generation/downloads require network access; never
+embed private index credentials or machine paths in committed files.
+
+For a bootstrap update, download the reviewed universal pip wheel separately,
+calculate its SHA-256 with `python -m pip hash WHEEL`, compare it with the release's
+PyPI digest, and update both the exact pin and hash in requirements-bootstrap.txt.
+Regenerate and validate the application lock using that installer, then repeat the
+clean installation, audit and tests. Do not replace this with a floating pip upgrade.
+
+Audit the complete app and installer locks without modifying them:
+
+```bash
+~/python-envs/job-tracker-lock-tools/bin/python -m pip_audit --disable-pip --strict -r requirements.txt -r requirements-bootstrap.txt --format json --output dependency-audit.json
+```
+
+This sends package names/versions to the default PyPI advisory service, not source
+code or secrets. Store the report as a review/CI artifact rather than committing
+it as a permanent security claim. Maintainer tools have explicitly selected versions
+in the command above, but their separate transitive environment is not part of the
+application lock. Hashing pins artifacts; it does not prove package safety.
+
+On 2026-10-16, pip-audit 2.10.1 reported no known vulnerabilities or skipped packages
+for the 42 locked application/installer packages. Auditing the previous pip 25.1.1
+reported six distinct advisories (some duplicated by the service): CVE-2025-8869,
+CVE-2026-1703, CVE-2026-3219, CVE-2026-6357, CVE-2026-8643 and CVE-2026-13346.
+The exact pip 26.2 bootstrap addresses the reported fixed-version requirements.
+Application versions were retained from the validated baseline. Advisory scanning
+is time-dependent, is not a reachability assessment, and does not cover unknown
+vulnerabilities, OS libraries, container images, or all tooling dependencies.
 
 ### 4. Versioned database setup
 
@@ -426,6 +492,37 @@ environment repeats verification for unversioned existing tables and refuses to
 skip directly to head. Stamping only records adoption; the additive revision adds
 the new schema. Compare counts AND every legacy field, not counts alone. Confirm
 all legacy user_id values remain NULL and users/sessions are empty.
+
+Security fix 61.2D compares dialect-compiled SQL types instead of Python inheritance:
+INTEGER accepts SQLAlchemy/PostgreSQL INTEGER representations, but BIGINT, SMALLINT,
+fixed CHAR, unbounded/differently sized VARCHAR, timezone loss and timestamp precision
+loss are rejected. PostgreSQL timestamp precision six is equivalent to its implicit
+precision and is accepted. SQLite's reflected DATETIME remains supported for tests;
+SQLite cannot establish PostgreSQL timezone behavior. SQLite's ID must be declared
+exactly INTEGER: INT PRIMARY KEY does not create the same rowid alias.
+
+Computed/identity columns are not the original serial baseline. The serial default
+must be the complete nextval expression for job_applications_id_seq in public,
+accepting legitimate qualification/quoting, with reflected autoincrement enabled.
+Suffix expressions and other sequences/schemas are rejected. PostgreSQL materialized
+views, user triggers, partitioned/unlogged tables and enabled/forced row security
+also differ from the baseline and block adoption.
+
+An existing 0001_legacy version is reverified before upgrade because schema drift
+can occur after stamping. Planned stamp steps are checked before writing a version
+row: only explicit 0001_legacy adoption of a verified existing schema is allowed.
+Empty databases must run upgrade, and stamp head cannot skip authentication DDL.
+Failed SQLite stamp attempts may leave an empty Alembic version table (SQLite DDL
+is not fully transactional); they must never leave an unverified version row.
+The historical 0001/0002 migration scripts and data remain unchanged.
+
+New tests exercise populated SQLite preservation on failed adoption and compatible
+baseline upgrades, plus reflected PostgreSQL types/defaults/options with mocks.
+No live PostgreSQL adoption or DDL was executed for this fix. CI's existing fresh
+PostgreSQL migration/check and sequential ownership coverage remain, but a newly
+approved disposable PostgreSQL legacy clone is still needed to validate real
+catalog reflection, serial defaults and populated adoption. Never use the original,
+restore-test, or preserved rehearsal databases for that validation.
 
 For this phase, original-database adoption is deliberately blocked, not authorized.
 When ownership enforcement exists, an independently reviewed migration/deployment
