@@ -27,7 +27,7 @@ def test_invalid_runtime_target_fails_before_engine_creation(name, environment, 
         values["APP_DATABASE_NAME"] = name
     # Disable .env loading to exercise missing values independently of local files.
     with patch.dict(os.environ, values, clear=True), patch("dotenv.load_dotenv"), \
-            patch("sqlalchemy.create_engine") as create_engine:
+            patch("app.database_engine.create_engine") as create_engine:
         with pytest.raises(ValueError) as error:
             runpy.run_path(str(DATABASE_MODULE))
     create_engine.assert_not_called()
@@ -48,7 +48,7 @@ def test_explicit_target_is_used_without_connecting(name, environment):
     values = {"APP_ENV": environment, "APP_DATABASE_NAME": name,
               "POSTGRES_PASSWORD": "private-password-marker"}
     with patch.dict(os.environ, values, clear=True), patch("dotenv.load_dotenv"), \
-            patch("sqlalchemy.create_engine") as create_engine:
+            patch("app.database_engine.create_engine") as create_engine:
         module = runpy.run_path(str(DATABASE_MODULE))
     create_engine.assert_called_once()
     assert create_engine.call_args.args[0].database == name
@@ -72,7 +72,7 @@ def test_normal_application_import_rejects_target_before_engine_creation(name):
     # A fresh process proves the normal startup import cannot use a cached module.
     code = """
 from unittest.mock import patch
-with patch('dotenv.load_dotenv'), patch('sqlalchemy.create_engine') as engine:
+with patch('dotenv.load_dotenv'), patch('app.database_engine.create_engine') as engine:
     try:
         import app.main
     except ValueError as error:

@@ -354,6 +354,98 @@ over the private project-root `.env`. Production must explicitly configure its
 intended migrated database; no development target is selected automatically.
 These checks validate configuration, not migration state or permission to use a DB.
 `python-dotenv==1.2.4` is now explicitly declared, alongside `pwdlib[argon2]==0.3.1`.
+
+### Isolated disposable MVP demo database
+
+The operator-approved current demo run has been started and its Docker metadata
+reports a healthy container, dedicated volume/network, and loopback-only port.
+No migration has been applied or database connection made for this run. This is
+a status report, not approval to reuse its identity or provision another run.
+Future runs require a new reviewed run ID and separate approval.
+
+`compose.demo-db.yaml` is a **separate, opt-in** PostgreSQL 17 service. It is
+not part of `compose.yaml` or the mail-capture file. Its project is
+`jobtracker-demo-<run-id>`, database `jobtracker_demo_<run-id>`, role
+`jobtracker_demo`, project-scoped named volume `demo_pgdata`, and host binding
+`127.0.0.1:55434:5432`. `<run-id>` must be a fresh 16-character lowercase
+hex string. No default run ID, password, database name, or approval is supplied.
+The existing `jobtracker_db`, `job-tracker-db`, and `postgres_data` must not be
+used. Do not combine Compose files with `-f compose.yaml`.
+
+Backend and Alembic select this target only when `APP_DATABASE_MODE=demo` and
+`APP_ENV=development` are explicit. `DEMO_RUN_ID` determines the exact database
+name; `DEMO_POSTGRES_PASSWORD` is a separate private value of at least 16
+characters. Fixed connection settings are `127.0.0.1:55434` and role
+`jobtracker_demo`. Ordinary target and custom host/port/user variables conflict
+with demo mode. Production rejects demo mode. Demo startup and migration loading
+skip the ordinary project `.env`; export demo settings only in the approved
+process environment. Do not print environment dumps, database URLs, unrestricted
+`docker compose config`, or Docker inspection output because they can contain
+passwords. The older `APP_DATABASE_MODE=disposable` path remains blocked.
+
+**Future operations require separate approval. Do not rerun creation for the
+already-started current run.** In a private shell with tracing disabled, an
+operator preparing a future run would generate a fresh `DEMO_RUN_ID` with a
+cryptographic random generator, privately set a
+different `DEMO_POSTGRES_PASSWORD`, and export `APP_ENV=development` and
+`APP_DATABASE_MODE=demo`. Keep `APP_DATABASE_NAME`, `POSTGRES_PASSWORD`,
+`MIGRATION_DATABASE_HOST`, `MIGRATION_DATABASE_PORT`, and
+`MIGRATION_DATABASE_USER` unset. For migrations only, set
+`MIGRATION_DATABASE_NAME=jobtracker_demo_<run-id>` using the *same* run ID.
+
+Before creation, read-only inspections must establish that the intended Compose
+project, its generated container/network/volume names, and host port `55434`
+are unused. Stop on any collision; never adopt or replace an existing resource.
+The following reusable commands are proposals for a future run, not approval
+to execute them. Run them from the project root with the private demo variables
+already exported. These checks are read-only and must produce no existing demo resource or
+port listener. The Python check validates configuration without printing it or
+opening a database connection:
+
+```bash
+PYTHONPATH=backend python -c 'import os; from app.database_config import demo_database_target; demo_database_target(os.environ)'
+ss -ltn '( sport = :55434 )'
+docker ps -a --filter "label=com.docker.compose.project=jobtracker-demo-${DEMO_RUN_ID}" --format '{{.ID}}'
+docker volume ls --filter "name=jobtracker-demo-${DEMO_RUN_ID}_demo_pgdata" --format '{{.Name}}'
+docker network ls --filter "name=jobtracker-demo-${DEMO_RUN_ID}_default" --format '{{.ID}}'
+```
+
+For a future run only, the next commands validate Compose configuration and
+create its container, network and volume. Creation needs explicit approval;
+the current run must not be created again:
+
+```bash
+docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" config --quiet
+docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" up -d --no-deps --pull never demo_db
+```
+
+Only after verifying the exact resources for the selected run, use the guarded, read-only
+`alembic current` connection to confirm the exact database identity. The
+subsequent fresh-database migration is separately approved and state-changing:
+
+```bash
+cd backend
+python -m alembic current
+python -m alembic upgrade head
+python -m alembic current
+```
+
+Alembic refuses an absent or mismatched `MIGRATION_DATABASE_NAME` and validates
+the connected database name before schema changes. `upgrade head` creates the
+versioned schema. The current demo run remains unmigrated.
+A later approved backend start must use the same `DEMO_RUN_ID` and demo password.
+Docker health and metadata were checked; migration and API behavior remain unverified.
+
+Cleanup has two distinct stages. `docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" ps`
+is read-only inspection. `docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" down` stops
+and removes only the verified demo project's container and network; it is a
+state-changing operation requiring separate approval. The named volume remains.
+`docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" down -v` **deletes demo database data**;
+use it only with separate explicit deletion approval after checking the exact
+run-specific project and immutable resource identity. Never run cleanup with an
+old/reused run ID or against the original Compose file. Port publication and
+Compose identity require live verification for each run before any migration.
+
 Origin schemes/hostnames are normalized and default ports removed; duplicates are
 removed. Origins refer to the browser-facing frontend (including its Vite port),
 not just the proxy target `127.0.0.1:8000`. Use localhost or 127.0.0.1 consistently

@@ -129,5 +129,8 @@ class AuthSettings:
 @lru_cache(maxsize=1)
 def get_auth_settings():
     # Match existing .env behavior: exported environment variables take precedence.
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+    # The opt-in demo uses only its explicit process environment, never the
+    # ordinary project's .env (which may select the protected database).
+    if os.environ.get("APP_DATABASE_MODE") != "demo":
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
     return AuthSettings.from_environment(os.environ)

@@ -1,54 +1,32 @@
 
 import os
-import re
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
-from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
+
+from app.database_config import DatabaseConfigurationError, runtime_database_name
+from app.database_engine import select_database_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-load_dotenv(PROJECT_ROOT / ".env")
-
-
-class DatabaseConfigurationError(ValueError):
-    """Runtime target errors contain setting names, never supplied values."""
-
-
-def runtime_database_name(values):
-    name = values.get("APP_DATABASE_NAME")
-    if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", name):
-        raise DatabaseConfigurationError(
-            "APP_DATABASE_NAME is required and must contain 1-63 lowercase ASCII "
-            "letters, digits or underscores, starting with a letter"
-        )
-    if name in {"jobtracker_db", "postgres", "template0", "template1"}:
-        raise DatabaseConfigurationError("APP_DATABASE_NAME selects a forbidden database")
-    return name
+# Demo mode uses only explicit process environment, never the ordinary .env.
+if os.environ.get("APP_DATABASE_MODE") != "demo":
+    load_dotenv(PROJECT_ROOT / ".env")
+    if os.environ.get("APP_DATABASE_MODE") == "demo":
+        raise DatabaseConfigurationError("APP_DATABASE_MODE=demo must be exported, not loaded from .env")
 
 
 # Fail before engine creation, including during normal app.main/Uvicorn imports.
 # No environment has a fallback target; production must also select explicitly.
-database_name = runtime_database_name(os.environ)
-password = os.getenv("POSTGRES_PASSWORD")
-
-if not password:
-    raise RuntimeError("POSTGRES_PASSWORD is not configured")
-
-DATABASE_URL = URL.create(
-    drivername="postgresql+psycopg",
-    username="jobtracker",
-    password=password,
-    host="127.0.0.1",
-    port=5432,
-    database=database_name,
-)
-
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+DATABASE_URL, engine = select_database_engine(os.environ)
 
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
 )
+
+
+def get_database_engine():
+    """The same selected bind used by application/authentication sessions."""
+    return SessionLocal.kw['bind']

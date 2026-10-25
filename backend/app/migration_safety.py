@@ -8,6 +8,11 @@ from sqlalchemy import Date, DateTime, Integer, String, Text, inspect, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import CompileError
 
+from app.database_config import (
+    DEMO_HOST, DEMO_PORT, DEMO_USER, DatabaseConfigurationError,
+    demo_database_target, runtime_database_mode, validate_database_name,
+)
+
 BASELINE = "0001_legacy"
 
 
@@ -25,10 +30,20 @@ def _baseline_type_matches(actual, expected, dialect):
 
 
 def migration_url():
+    if os.environ.get("APP_DATABASE_MODE") == "demo":
+        target = demo_database_target(os.environ)
+        if os.environ.get("MIGRATION_DATABASE_NAME") != target.name:
+            raise RuntimeError("MIGRATION_DATABASE_NAME must match the selected demo run")
+        return URL.create("postgresql+psycopg", username=DEMO_USER, password=target.password,
+                          host=DEMO_HOST, port=DEMO_PORT, database=target.name)
     load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
-    name = os.getenv("MIGRATION_DATABASE_NAME", "")
-    if not name or name in {"jobtracker_db", "postgres", "template0", "template1"}:
-        raise RuntimeError("An explicit non-original MIGRATION_DATABASE_NAME is required; jobtracker_db is blocked")
+    # Keep the existing disposable mode blocked and reject unexpected modes.
+    if runtime_database_mode(os.environ) != "ordinary":
+        raise RuntimeError("Migration mode is unavailable")
+    try:
+        name = validate_database_name(os.getenv("MIGRATION_DATABASE_NAME"), "MIGRATION_DATABASE_NAME")
+    except DatabaseConfigurationError:
+        raise RuntimeError("An explicit non-original valid MIGRATION_DATABASE_NAME is required") from None
     password = os.getenv("POSTGRES_PASSWORD")
     if not password:
         raise RuntimeError("POSTGRES_PASSWORD is required")
@@ -41,10 +56,16 @@ def migration_url():
 
 def check_target(connection, expected_name=None):
     if connection.dialect.name == "postgresql":
-        if not expected_name or expected_name == "jobtracker_db":
-            raise RuntimeError("Explicit non-original PostgreSQL target required")
+        try:
+            validate_database_name(expected_name, "MIGRATION_DATABASE_NAME")
+        except DatabaseConfigurationError:
+            raise RuntimeError("Explicit non-original valid PostgreSQL target required") from None
         actual = connection.scalar(text("SELECT current_database()"))
-        if actual != expected_name or actual == "jobtracker_db":
+        try:
+            validate_database_name(actual, "PostgreSQL database identity")
+        except DatabaseConfigurationError:
+            raise RuntimeError("PostgreSQL migration target is invalid or forbidden") from None
+        if actual != expected_name:
             raise RuntimeError("PostgreSQL migration target does not match the approved database")
         if connection.scalar(text("SELECT current_schema()")) != "public":
             raise RuntimeError("Migration rehearsal requires the public schema")
