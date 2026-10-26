@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { getCsrfToken } from '../auth/authClient.js'
 
-function DeleteApplicationDialog({ application, onCancel, onDeleted }) {
+function DeleteApplicationDialog({ application, onCancel, onDeleted, onUnauthorized }) {
   const dialogRef = useRef(null)
   const cancelRef = useRef(null)
   const errorRef = useRef(null)
@@ -32,7 +33,16 @@ function DeleteApplicationDialog({ application, onCancel, onDeleted }) {
     setError('')
 
     try {
-      const response = await fetch(`/applications/${application.id}`, { method: 'DELETE' })
+      const csrfToken = await getCsrfToken()
+
+      const response = await fetch(`/applications/${application.id}`, { method: 'DELETE',
+        headers: { 'Content-Type': 'application/json','X-CSRF-Token': csrfToken },
+        body: JSON.stringify({}),
+       })
+      if (response.status === 401) {
+        onUnauthorized()
+        return
+      }
       if (!response.ok) {
         const body = await response.json().catch(() => null)
         let message = `Unable to delete the application (HTTP ${response.status}). Please try again.`

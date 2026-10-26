@@ -25,7 +25,78 @@ Vite so opening or refreshing the `/applications` page works.
 ```bash
 npm run build
 npm run lint
+npm test
 ```
+
+## Email verification
+
+For an ordinary local browser demo, use the opt-in, disposable mail-capture
+setup in `../docs/setup.md` only after a separate demo database is approved.
+The mailbox UI is loopback-only and contains sensitive verification links.
+Registration and resend still give generic responses; open the captured email
+privately to follow its link. The debugger-only preview below remains available
+for isolated development, but does not show links in the tracker UI or support resend.
+
+`/verify-email` is public and accepts development preview links in this exact form:
+`http://localhost:5173/verify-email#token=<43-character-base64url-token>`.
+Query-string tokens, duplicate/extra fragment parameters, and malformed tokens
+are rejected without CSRF or verification requests. The route skips the normal
+application session check. No authentication state is granted by verification.
+
+The committed page's layout effect removes the fragment and unsupported query
+parameters using `history.replaceState` before any verification requests. It then
+gets `/auth/csrf` and posts JSON `{ "token": "..." }` to `/auth/verify-email`,
+using same-origin credentials and `X-CSRF-Token`. The existing `/auth` Vite proxy
+already supports these requests. Use one consistent browser host (localhost or
+127.0.0.1) so cookies and allowed origins match.
+
+One in-memory promise per mounted page prevents StrictMode effect replay and
+rerenders from sending duplicate requests. Unmounting detaches UI updates but does
+not abort/retry a potentially committed verification request. Refreshing the cleaned
+URL shows an invalid link; there is no persistent token or automatic retry. On an
+uncertain network/storage failure, try signing in later; reopen the original link
+only if the account remains inactive. A completed verification can make replay
+return the same generic invalid/expired/already-used state.
+
+`npm test` uses Node 24's built-in test runner. Flow/unit tests mock history/fetch;
+DOM tests use the development dependency jsdom and mount the actual App inside
+BrowserRouter and StrictMode with React `act`. A test-only Node loader uses Vite's
+installed Rolldown transformer for JSX and ignores CSS; no Vite server is started.
+Run `npm ci` after pulling dependency changes. No backend or database is needed.
+
+All fetch requests are mocked; jsdom external resource/script loading is disabled,
+and its XMLHttpRequest/WebSocket interfaces are blocked. Tests cover real effect
+replay, rerenders, unmount/remount with a pending request, explicitly reopening the
+original link, URL cleanup before bootstrap, one verification POST, missing and
+malformed tokens, CSRF failures, success/error states, safe rendered messages,
+credentials and headers, absence of persistent token storage, and clicking through
+to the existing login page. StrictMode's two effect setups and first cleanup are
+asserted directly. Remounting the cleaned URL makes no API calls; reopening the
+original token link deliberately starts a fresh attempt, which may be rejected as
+already consumed. No production changes were needed for these DOM tests.
+
+jsdom is not a real browser: layout, actual focus traversal, native cookie/CORS
+behavior, browser history retention, and Vite proxy behavior still need manual
+browser checks. CSS is validated by the production build, not DOM assertions.
+
+Manual browser checks, when a separately approved backend environment is available:
+
+1. Enable the private development preview described in `../docs/setup.md`, register
+   a new account, and retrieve its link using the trusted local in-process debugger.
+2. Open the link. Confirm that the address becomes `/verify-email`, loading changes
+   to success, and DevTools shows one CSRF bootstrap and one verification POST.
+   Inspect request URLs only; do not export HAR files or log secret-bearing bodies.
+3. Confirm the page stays public and offers **Go to sign in**; login is explicit.
+4. Open the original link again: expect the generic invalid/expired/used state.
+5. Try a missing or malformed fragment: expect an invalid-link message and no API
+   requests. Simulate an unavailable API: expect the fixed temporary-error message.
+6. Check keyboard focus, the login link, narrow-screen layout, and the existing
+   login, registration, Applications and Analytics routes.
+
+The fragment exists briefly before JavaScript runs. Browser extensions/history,
+debuggers, browser network inspection, and third-party scripts can still see
+secrets; do not add analytics, error-local capture, or persistent token storage.
+Use HTTPS in production. Public email delivery remains unimplemented.
 
 Check the dashboard with existing database records: compare its rows and summary
 counts against `http://127.0.0.1:8000/applications`. Nullable locations and dates
@@ -234,3 +305,14 @@ Manual navigation checks:
 8. At mobile and desktop widths, check navigation and chart resizing. Tab through
    the skip link/navigation, confirm active links and page titles, and verify focus
    reaches the new main content after route changes.
+
+## Session changes and private data
+
+A confirmed 401 from `/auth/me` or an application GET, POST, PATCH, or DELETE
+clears the signed-in user, cached applications, search, and status filter, then
+routes protected pages to Sign in. A temporary `/auth/me` or uncertain logout
+failure hides private data and offers **Try again** to check the session. Logout
+hides data as soon as it starts. In-flight responses from an earlier login or
+account are ignored; a new sign-in fetches that account's list before showing rows.
+These behaviors have mocked DOM tests; real browser cookie and proxy behavior still
+requires a separately approved local integration environment.
