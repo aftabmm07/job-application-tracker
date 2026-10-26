@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime
+import secrets
 
 from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, func, false
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
@@ -69,6 +70,12 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now(), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     email_verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    full_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    professional_headline: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    github_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    portfolio_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     applications: Mapped[list[JobApplication]] = relationship(back_populates="user", passive_deletes="all")
     sessions: Mapped[list["AuthSession"]] = relationship(back_populates="user", passive_deletes="all")
@@ -103,3 +110,105 @@ class AuthSession(Base):
     last_activity_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     idle_expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     user: Mapped[User | None] = relationship(back_populates="sessions")
+
+class EmailVerificationToken(Base):
+    __tablename__ = "email_verification_tokens"
+
+    __table_args__ = (
+        Index(
+            "ix_email_verification_tokens_token_hash",
+            "token_hash",
+            unique=True,
+        ),
+        CheckConstraint(
+            "length(token_hash) = 32",
+            name="ck_email_verification_tokens_sha256_length",
+        ),
+        CheckConstraint(
+            "expires_at > created_at",
+            name="ck_email_verification_tokens_expiration",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    token_hash: Mapped[bytes] = mapped_column(
+        LargeBinary(32),
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+    )
+
+    expires_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        nullable=False,
+    )
+
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(),
+        nullable=True,
+    )
+
+
+class EmailVerificationOutbox(Base):
+    """Dormant delivery metadata; no bearer token, link, or email content."""
+
+    __tablename__ = "email_verification_outbox"
+    __table_args__ = (
+        UniqueConstraint("token_id", name="uq_email_verification_outbox_token_id"),
+        Index("ix_email_verification_outbox_due", "state", "next_attempt_at"),
+        Index("ix_email_verification_outbox_lease", "state", "lease_expires_at"),
+        CheckConstraint("length(nonce) = 32", name="ck_email_verification_outbox_nonce_length"),
+        CheckConstraint("length(key_version) BETWEEN 1 AND 32", name="ck_email_verification_outbox_key_version"),
+        CheckConstraint(
+            "state IN ('queued', 'leased', 'delivered', 'cancelled', 'uncertain')",
+            name="ck_email_verification_outbox_state",
+        ),
+        CheckConstraint("expires_at > created_at", name="ck_email_verification_outbox_expiration"),
+        CheckConstraint(
+            "next_attempt_at >= created_at AND next_attempt_at <= expires_at",
+            name="ck_email_verification_outbox_schedule",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_email_verification_outbox_attempts"),
+        CheckConstraint("fencing_generation >= 0", name="ck_email_verification_outbox_generation"),
+        CheckConstraint(
+            "(state = 'leased' AND lease_owner IS NOT NULL AND length(lease_owner) = 16 "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(state <> 'leased' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+            name="ck_email_verification_outbox_lease_state",
+        ),
+        CheckConstraint(
+            "failure_category IS NULL OR failure_category IN "
+            "('transport', 'timeout', 'storage', 'configuration', 'uncertain', 'other')",
+            name="ck_email_verification_outbox_failure_category",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_id: Mapped[int] = mapped_column(
+        ForeignKey("email_verification_tokens.id", name="fk_email_verification_outbox_token_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    nonce: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False, default=lambda: secrets.token_bytes(32))
+    key_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="queued", server_default="queued")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    lease_owner: Mapped[bytes | None] = mapped_column(LargeBinary(16), nullable=True)
+    fencing_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    failure_category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    def __repr__(self):
+        return "<EmailVerificationOutbox>"

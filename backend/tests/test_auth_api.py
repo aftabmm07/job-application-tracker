@@ -11,14 +11,16 @@ from sqlalchemy.pool import StaticPool
 
 from app.auth_config import AuthSettings, get_auth_settings
 from app.auth_limits import AuthRateLimiter, get_auth_limiter
+from app.email_delivery import get_email_sender
 from app.main import app, get_db
-from app.models import AuthSession, Base, User
+from app.models import AuthSession, Base, EmailVerificationToken, User
 from app.passwords import hash_password, verify_password
 from scripts.activate_development_user import activate_user
 
 PASSWORD = 'a safe test password with spaces'
 EMAIL = 'person@example.com'
 ORIGIN = 'http://localhost:5173'
+PRODUCTION_ORIGIN = 'https://tracker.example.test'
 
 
 @pytest.fixture(scope='module')
@@ -30,7 +32,7 @@ def encoded_password():
 def ctx(encoded_password):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
-    settings = AuthSettings.from_environment({})
+    settings = AuthSettings.from_environment({'VERIFICATION_FRONTEND_ORIGIN': ORIGIN})
     limiter = AuthRateLimiter()
     with Session(engine) as db:
         def override_db():
@@ -41,22 +43,23 @@ def ctx(encoded_password):
         try:
             with TestClient(app) as client:
                 yield SimpleNamespace(db=db, client=client, settings=settings, limiter=limiter,
+                                      origin=ORIGIN,
                                       password_hash=encoded_password, csrf=None)
         finally:
-            for dependency in (get_db, get_auth_settings, get_auth_limiter):
+            for dependency in (get_db, get_auth_settings, get_auth_limiter, get_email_sender):
                 app.dependency_overrides.pop(dependency, None)
     engine.dispose()
 
 
 def bootstrap(ctx):
-    response = ctx.client.get('/auth/csrf', headers={'Origin': ORIGIN})
+    response = ctx.client.get('/auth/csrf', headers={'Origin': ctx.origin})
     assert response.status_code == 200
     ctx.csrf = response.json()['csrf_token']
     return response
 
 
 def headers(ctx):
-    values = {'Origin': ORIGIN, 'Content-Type': 'application/json'}
+    values = {'Origin': ctx.origin, 'Content-Type': 'application/json'}
     if ctx.csrf is not None:
         values['X-CSRF-Token'] = ctx.csrf
     return values
@@ -64,6 +67,15 @@ def headers(ctx):
 
 def post(ctx, path, data=None):
     return ctx.client.post(path, json=data if data is not None else {'email': EMAIL, 'password': PASSWORD}, headers=headers(ctx))
+
+
+def production_delivery_settings():
+    return AuthSettings.from_environment({
+        'APP_ENV': 'production',
+        'CSRF_HMAC_SECRET': 'test-only-production-csrf-secret-1234567890',
+        'AUTH_ALLOWED_ORIGINS': PRODUCTION_ORIGIN,
+        'VERIFICATION_FRONTEND_ORIGIN': PRODUCTION_ORIGIN,
+    })
 
 
 def add_user(ctx, *, active=True, email=EMAIL):
@@ -589,6 +601,7 @@ def test_unknown_account_password_work_runs_in_worker_thread(ctx, monkeypatch):
 
 @pytest.mark.parametrize('method, path', [
     ('POST', '/auth/register'), ('POST', '/auth/login'), ('POST', '/auth/logout'),
+    ('POST', '/auth/resend-verification'),
     ('POST', '/applications'), ('PATCH', '/applications/1'), ('DELETE', '/applications/1'),
 ])
 @pytest.mark.parametrize('streamed', [False, True])
@@ -661,3 +674,786 @@ def test_auth_expiry_after_lock_does_not_issue_or_clear_cookie(ctx, path, expect
     assert ctx.client.cookies.get('session') == raw
     assert count(ctx, AuthSession) == 1
     assert raw not in response.text and PASSWORD not in response.text
+
+
+def test_registration_issues_only_hashed_one_hour_token(ctx, caplog):
+    import hashlib
+    from app import email_verification
+    bootstrap(ctx)
+    now = datetime.now(UTC)
+    generated = []
+    original = email_verification.generate_verification_token
+
+    def capture_generated():
+        issued = original()
+        generated.append(issued)
+        return issued
+
+    with patch.object(email_verification, 'utc_now', return_value=now), \
+            patch.object(email_verification, 'generate_verification_token', side_effect=capture_generated):
+        response = post(ctx, '/auth/register')
+    assert response.status_code == 202
+    assert len(generated) == 1
+    raw, digest = generated[0]
+    row = ctx.db.scalar(select(EmailVerificationToken))
+    user = ctx.db.scalar(select(User))
+    assert row.user_id == user.id
+    assert row.token_hash == hashlib.sha256(raw.encode('ascii')).digest() == digest
+    assert row.created_at == now
+    assert row.expires_at == now + timedelta(hours=1)
+    assert row.consumed_at is None
+    assert not user.is_active and user.email_verified_at is None
+    assert set(response.json()) == {'message'}
+    assert 'set-cookie' not in response.headers
+    assert response.headers['cache-control'] == 'no-store'
+    assert raw not in response.text + str(response.headers) + str(ctx.client.cookies) + caplog.text
+    assert raw not in repr(vars(row))
+    ctx.db.rollback()
+    # Read from an independent session to verify actual persistence.
+    with Session(ctx.db.get_bind()) as independent:
+        assert independent.scalar(select(EmailVerificationToken)).token_hash == digest
+        assert independent.scalar(select(User)).id == row.user_id
+
+
+class FakeEmailSender:
+    def __init__(self, failure=None):
+        self.sent = []
+        self.failure = failure
+
+    def send_verification(self, recipient, link, expires_at):
+        if self.failure is not None:
+            raise self.failure
+        self.sent.append((recipient, link, expires_at))
+
+
+def test_registration_delivers_fragment_link_with_only_hashed_storage(ctx, caplog):
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    bootstrap(ctx)
+    response = post(ctx, '/auth/register')
+    assert response.status_code == 202
+    assert len(sender.sent) == 1
+    recipient, link, expires_at = sender.sent[0]
+    assert recipient == EMAIL
+    assert link.startswith(ORIGIN + '/verify-email#token=')
+    raw = link.split('#token=', 1)[1]
+    import hashlib
+    row = ctx.db.scalar(select(EmailVerificationToken))
+    assert row.token_hash == hashlib.sha256(raw.encode('ascii')).digest()
+    assert row.expires_at == expires_at
+    assert ctx.db.scalar(select(User)).is_active is False
+    assert raw not in response.text + str(response.headers) + caplog.text + repr(row)
+    assert 'set-cookie' not in response.headers
+
+
+def test_duplicate_registration_never_calls_sender_or_replaces_token(ctx):
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    bootstrap(ctx)
+    first = post(ctx, '/auth/register')
+    assert len(sender.sent) == 1
+    original = ctx.db.scalar(select(EmailVerificationToken)).token_hash
+    second = post(ctx, '/auth/register')
+    assert first.status_code == second.status_code == 202
+    assert first.json() == second.json()
+    assert len(sender.sent) == 1
+    assert ctx.db.scalar(select(EmailVerificationToken)).token_hash == original
+
+
+def test_sender_failure_rolls_back_registration_without_disclosure(ctx, caplog):
+    secret = 'synthetic-private-delivery-token'
+    sender = FakeEmailSender(RuntimeError(secret))
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    bootstrap(ctx)
+    failed = post(ctx, '/auth/register')
+    assert failed.status_code == 202
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+    assert secret not in failed.text + str(failed.headers) + caplog.text
+    # The public response is identical when this address already exists.
+    add_user(ctx, active=False)
+    duplicate = post(ctx, '/auth/register')
+    assert duplicate.status_code == 202 and duplicate.json() == failed.json()
+    assert count(ctx, EmailVerificationToken) == 0
+
+
+def test_token_insert_failure_never_calls_sender(ctx):
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    bootstrap(ctx)
+    ctx.db.connection().exec_driver_sql(
+        "CREATE TRIGGER fail_delivery_token BEFORE INSERT ON email_verification_tokens "
+        "BEGIN SELECT RAISE(ABORT, 'private-insert-detail'); END"
+    )
+    ctx.db.commit()
+    response = post(ctx, '/auth/register')
+    assert response.status_code == 503
+    assert sender.sent == []
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+
+
+def test_private_preview_is_not_delivery_fallback_in_production(ctx, monkeypatch):
+    from dataclasses import replace
+    from app.development_verification_preview import DevelopmentPreviewStore
+    # Production settings are validated first. The direct replacement then
+    # probes the preview's independent production guard against a bad caller.
+    settings = replace(production_delivery_settings(), dev_email_verification_preview=True)
+    store = DevelopmentPreviewStore()
+    publish = Mock(wraps=store.publish)
+    monkeypatch.setattr(store, 'publish', publish)
+    monkeypatch.setattr('app.auth_routes.development_previews', store)
+    sender_provider = Mock(return_value=None)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    app.dependency_overrides[get_email_sender] = lambda: sender_provider()
+    ctx.origin = PRODUCTION_ORIGIN
+    with TestClient(app, base_url='https://testserver') as client:
+        ctx.client = client
+        csrf_response = bootstrap(ctx)
+        assert 'Secure' in csrf_response.headers['set-cookie']
+        assert '__Host-session=' in csrf_response.headers['set-cookie']
+        with patch('app.auth_routes.add_registration_verification_token') as issue:
+            response = post(ctx, '/auth/register')
+        issue.assert_not_called()
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Authentication service unavailable'}
+    assert response.headers['cache-control'] == 'no-store'
+    sender_provider.assert_called_once_with()
+    publish.assert_not_called()
+    assert not store._entries
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+
+
+def test_configured_sender_does_not_enable_private_preview(ctx, monkeypatch):
+    from app.development_verification_preview import DevelopmentPreviewStore
+    store = DevelopmentPreviewStore()
+    monkeypatch.setattr('app.auth_routes.development_previews', store)
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    bootstrap(ctx)
+    assert post(ctx, '/auth/register').status_code == 202
+    user = ctx.db.scalar(select(User))
+    assert len(sender.sent) == 1
+    assert store.take(user.id, ctx.settings) is None
+
+
+def test_configured_sender_requires_explicit_link_origin(ctx):
+    from dataclasses import replace
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    app.dependency_overrides[get_auth_settings] = lambda: replace(
+        ctx.settings, verification_frontend_origin=None,
+    )
+    bootstrap(ctx)
+    response = post(ctx, '/auth/register')
+    assert response.status_code == 503
+    assert sender.sent == []
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+
+
+def test_commit_failure_after_sender_acceptance_never_confirms_registration(ctx, caplog):
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    bootstrap(ctx)
+    with patch.object(ctx.db, 'commit', side_effect=SQLAlchemyError('private-commit-detail')):
+        response = post(ctx, '/auth/register')
+    assert response.status_code == 503
+    assert len(sender.sent) == 1
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+    raw = sender.sent[0][1].split('#token=', 1)[1]
+    assert raw not in response.text + str(response.headers) + caplog.text
+    assert 'private-commit-detail' not in response.text + caplog.text
+
+
+def test_production_registration_without_sender_fails_closed(ctx):
+    settings = production_delivery_settings()
+    sender_provider = Mock(return_value=None)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    app.dependency_overrides[get_email_sender] = lambda: sender_provider()
+    ctx.origin = PRODUCTION_ORIGIN
+    with TestClient(app, base_url='https://testserver') as client:
+        ctx.client = client
+        csrf_response = bootstrap(ctx)
+        assert 'Secure' in csrf_response.headers['set-cookie']
+        assert '__Host-session=' in csrf_response.headers['set-cookie']
+        with patch('app.auth_routes.add_registration_verification_token') as issue:
+            response = post(ctx, '/auth/register')
+        issue.assert_not_called()
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Authentication service unavailable'}
+    assert response.headers['cache-control'] == 'no-store'
+    sender_provider.assert_called_once_with()
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+
+
+def resend(ctx, email=EMAIL):
+    return post(ctx, '/auth/resend-verification', {'email': email})
+
+
+def resend_public_result(response):
+    return (response.status_code, response.json(), response.headers.get('content-type'),
+            response.headers.get('cache-control'), response.headers.get('retry-after'),
+            response.headers.get('set-cookie'))
+
+
+def test_resend_has_identical_generic_response_for_account_states_limits_and_no_sender(ctx):
+    from app.auth_schemas import ResendVerificationResponse
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    add_user(ctx, email='active@example.com')
+    cooldown_id = add_user(ctx, active=False, email='cooldown@example.com')
+    now = datetime.now(UTC)
+    ctx.db.add(EmailVerificationToken(user_id=cooldown_id, token_hash=b'c' * 32,
+                                      created_at=now, expires_at=now + timedelta(hours=1)))
+    ctx.db.commit()
+    bootstrap(ctx)
+    replies = [resend(ctx, 'unknown@example.com'), resend(ctx, 'active@example.com'),
+               resend(ctx, 'cooldown@example.com')]
+    # Exhaust an unknown address's email limit without changing its account state.
+    for _ in range(3):
+        ctx.limiter.check([('resend-email', 'limited@example.com', 3, 3600)])
+    with patch('app.auth_routes.select', side_effect=AssertionError('No account lookup on limit')):
+        replies.append(resend(ctx, 'limited@example.com'))
+    app.dependency_overrides[get_email_sender] = lambda: None
+    replies.append(resend(ctx, 'unavailable@example.com'))
+    expected = (202, ResendVerificationResponse().model_dump(), 'application/json',
+                'no-store', None, None)
+    assert all(resend_public_result(response) == expected for response in replies)
+    assert sender.sent == []
+    assert count(ctx, EmailVerificationToken) == 1
+
+
+def test_resend_sends_one_new_link_and_preserves_generic_response(ctx, caplog):
+    import hashlib
+    from app.auth_schemas import ResendVerificationResponse
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    user_id = add_user(ctx, active=False)
+    old_raw = 'o' * 43
+    now = datetime.now(UTC)
+    ctx.db.add(EmailVerificationToken(user_id=user_id,
+                                      token_hash=hashlib.sha256(old_raw.encode('ascii')).digest(),
+                                      created_at=now - timedelta(minutes=20),
+                                      expires_at=now + timedelta(minutes=40)))
+    ctx.db.commit()
+    bootstrap(ctx)
+    response = resend(ctx, '  Person@Example.COM  ')
+    assert resend_public_result(response) == (
+        202, ResendVerificationResponse().model_dump(), 'application/json', 'no-store', None, None,
+    )
+    assert len(sender.sent) == 1 and sender.sent[0][0] == EMAIL
+    link = sender.sent[0][1]
+    assert link.startswith(ORIGIN + '/verify-email#token=')
+    raw = link.split('#token=', 1)[1]
+    rows = ctx.db.scalars(select(EmailVerificationToken).order_by(EmailVerificationToken.id)).all()
+    assert len(rows) == 2 and rows[0].consumed_at is not None
+    assert rows[1].token_hash == hashlib.sha256(raw.encode('ascii')).digest()
+    assert rows[1].consumed_at is None
+    assert raw not in response.text + str(response.headers) + str(ctx.client.cookies) + caplog.text
+    assert old_raw not in response.text
+    assert ctx.db.get(User, user_id).is_active is False
+
+
+def test_resend_email_limit_counts_unknown_addresses_and_normalized_spelling(ctx):
+    import hashlib
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    bootstrap(ctx)
+    for spelling in ('  Person@Example.COM  ', EMAIL, 'PERSON@example.com'):
+        assert resend(ctx, spelling).status_code == 202
+    key = ('resend-email', hashlib.sha256(EMAIL.encode('utf-8')).digest())
+    assert ctx.limiter.entries[key][0] == 3
+    with patch('app.auth_routes.select', side_effect=AssertionError('No lookup after limit')):
+        response = resend(ctx, EMAIL)
+    assert response.status_code == 202 and response.headers.get('retry-after') is None
+    ip_entries = [entry for (scope, _), entry in ctx.limiter.entries.items() if scope == 'resend-ip']
+    assert len(ip_entries) == 1 and ip_entries[0][0] == 4
+    assert sender.sent == [] and count(ctx, EmailVerificationToken) == 0
+
+
+def test_resend_ip_limit_is_generic_and_skips_lookup(ctx):
+    bootstrap(ctx)
+    for _ in range(20):
+        ctx.limiter.check([('resend-ip', 'testclient', 20, 900)])
+    with patch('app.auth_routes.select', side_effect=AssertionError('No lookup after limit')):
+        response = resend(ctx)
+    assert response.status_code == 202
+    assert response.headers.get('retry-after') is None
+    assert count(ctx, EmailVerificationToken) == 0
+
+
+@pytest.mark.parametrize('bad, expected', [
+    ('missing_csrf', 403), ('invalid_csrf', 403), ('missing_session', 403),
+    ('untrusted_origin', 403),
+    ('missing_origin', 403), ('wrong_content_type', 415),
+])
+def test_resend_security_rejection_never_calls_sender(ctx, bad, expected):
+    sender = FakeEmailSender()
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    add_user(ctx, active=False)
+    bootstrap(ctx)
+    request_headers = headers(ctx)
+    if bad == 'missing_csrf':
+        request_headers.pop('X-CSRF-Token')
+    elif bad == 'invalid_csrf':
+        request_headers['X-CSRF-Token'] = '0' * 64
+    elif bad == 'missing_session':
+        ctx.client.cookies.clear()
+    elif bad == 'untrusted_origin':
+        request_headers['Origin'] = 'http://evil.example'
+    elif bad == 'missing_origin':
+        request_headers.pop('Origin')
+    else:
+        request_headers['Content-Type'] = 'text/plain'
+    with patch('app.auth_routes.resend_verification_for_user') as service:
+        response = ctx.client.post('/auth/resend-verification',
+                                   content=b'{"email":"person@example.com"}', headers=request_headers)
+    assert response.status_code == expected
+    assert response.headers['cache-control'] == 'no-store'
+    service.assert_not_called()
+    assert sender.sent == [] and count(ctx, EmailVerificationToken) == 0
+
+
+@pytest.mark.parametrize('payload', [
+    {}, {'email': 'invalid'}, {'email': None}, {'email': EMAIL, 'extra': 'private-extra-value'},
+])
+def test_resend_malformed_request_is_sanitized(ctx, payload, caplog):
+    bootstrap(ctx)
+    response = post(ctx, '/auth/resend-verification', payload)
+    assert response.status_code == 422
+    assert response.json() == {'detail': 'Invalid authentication request'}
+    assert response.headers['cache-control'] == 'no-store'
+    assert 'private-extra-value' not in response.text + caplog.text
+    assert count(ctx, EmailVerificationToken) == 0
+
+
+def test_resend_delivery_failure_is_generic_and_preserves_old_token(ctx, caplog):
+    import hashlib
+    secret = 'private-resend-delivery-error'
+    sender = FakeEmailSender(RuntimeError(secret))
+    app.dependency_overrides[get_email_sender] = lambda: sender
+    user_id = add_user(ctx, active=False)
+    now = datetime.now(UTC)
+    original_hash = hashlib.sha256(b'original-resend-token').digest()
+    ctx.db.add(EmailVerificationToken(user_id=user_id, token_hash=original_hash,
+                                      created_at=now - timedelta(minutes=20),
+                                      expires_at=now + timedelta(minutes=40)))
+    ctx.db.commit()
+    bootstrap(ctx)
+    response = resend(ctx)
+    assert response.status_code == 202
+    row = ctx.db.scalar(select(EmailVerificationToken))
+    assert row.token_hash == original_hash and row.consumed_at is None
+    assert count(ctx, EmailVerificationToken) == 1
+    assert secret not in response.text + str(response.headers) + caplog.text
+
+
+def test_resend_without_sender_or_preview_does_not_issue_token_in_production(ctx):
+    settings = production_delivery_settings()
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    app.dependency_overrides[get_email_sender] = lambda: None
+    ctx.origin = PRODUCTION_ORIGIN
+    add_user(ctx, active=False)
+    with TestClient(app, base_url='https://testserver') as client:
+        ctx.client = client
+        bootstrap(ctx)
+        response = resend(ctx)
+    assert response.status_code == 202
+    assert response.headers['cache-control'] == 'no-store'
+    assert count(ctx, EmailVerificationToken) == 0
+
+
+@pytest.mark.parametrize('existing', ['active', 'inactive', 'previous_registration'])
+def test_duplicate_registration_never_issues_or_replaces_tokens(ctx, existing):
+    bootstrap(ctx)
+    if existing == 'previous_registration':
+        first = post(ctx, '/auth/register')
+        assert first.status_code == 202
+    else:
+        add_user(ctx, active=existing == 'active')
+    user = ctx.db.scalar(select(User))
+    before = (user.password_hash, user.is_active, user.email_verified_at)
+    tokens = [(row.id, row.token_hash, row.expires_at, row.consumed_at)
+              for row in ctx.db.scalars(select(EmailVerificationToken))]
+    with patch('app.email_verification.generate_verification_token', side_effect=AssertionError('Must not issue')):
+        response = post(ctx, '/auth/register', {'email': EMAIL.upper(), 'password': PASSWORD + ' changed'})
+    assert response.status_code == 202
+    from app.auth_schemas import RegistrationResponse
+    assert response.json() == RegistrationResponse().model_dump()
+    ctx.db.refresh(user)
+    assert (user.password_hash, user.is_active, user.email_verified_at) == before
+    assert [(row.id, row.token_hash, row.expires_at, row.consumed_at)
+            for row in ctx.db.scalars(select(EmailVerificationToken))] == tokens
+    assert 'set-cookie' not in response.headers
+
+
+@pytest.mark.parametrize('table', ['users', 'email_verification_tokens'])
+def test_registration_insert_failure_rolls_back_both_rows(ctx, table, caplog):
+    bootstrap(ctx)
+    ctx.db.connection().exec_driver_sql(
+        f"CREATE TRIGGER fail_registration BEFORE INSERT ON {table} "
+        "BEGIN SELECT RAISE(ABORT, 'synthetic-private-insert-detail'); END")
+    ctx.db.commit()
+    response = post(ctx, '/auth/register')
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Authentication service unavailable'}
+    assert 'synthetic-private-insert-detail' not in response.text + caplog.text
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+    assert 'set-cookie' not in response.headers
+
+
+@pytest.mark.parametrize('commit_completed', [False, True])
+def test_registration_commit_failure_after_token_insert_is_sanitized(ctx, commit_completed, caplog):
+    import hashlib
+    bootstrap(ctx)
+    real_commit = ctx.db.commit
+    raw = 'synthetic_verification_token_for_failure_00001'
+    digest = hashlib.sha256(raw.encode('ascii')).digest()
+
+    def failing_commit():
+        ctx.db.flush()
+        assert count(ctx, User) == count(ctx, EmailVerificationToken) == 1
+        if commit_completed:
+            real_commit()
+        raise SQLAlchemyError('synthetic-private-commit-detail ' + raw)
+
+    with patch.object(ctx.db, 'commit', side_effect=failing_commit), \
+            patch('app.email_verification.generate_verification_token', return_value=(raw, digest)):
+        response = post(ctx, '/auth/register')
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Authentication service unavailable'}
+    assert 'synthetic-private-commit-detail' not in response.text + caplog.text
+    assert raw not in response.text + str(response.headers) + str(ctx.client.cookies) + caplog.text
+    assert 'set-cookie' not in response.headers
+    expected = int(commit_completed)
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == expected
+    # An exception after commit must not issue another token on client retry.
+    if commit_completed:
+        with patch('app.email_verification.generate_verification_token', side_effect=AssertionError('Must not reissue')):
+            assert post(ctx, '/auth/register').status_code == 202
+        assert count(ctx, EmailVerificationToken) == 1
+
+
+def test_registration_token_generation_failure_rolls_back_new_user(ctx, caplog):
+    bootstrap(ctx)
+    with patch('app.email_verification.generate_verification_token', side_effect=RuntimeError('synthetic-private-generator-detail')):
+        response = post(ctx, '/auth/register')
+    assert response.status_code == 500
+    assert 'synthetic-private-generator-detail' not in response.text + caplog.text
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 0
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_development_preview_is_private_optional_and_one_shot(ctx, monkeypatch, caplog, enabled):
+    import hashlib
+    from dataclasses import replace
+    from app import email_verification
+    from app.development_verification_preview import DevelopmentPreviewStore
+    store = DevelopmentPreviewStore()
+    monkeypatch.setattr('app.auth_routes.development_previews', store)
+    settings = replace(ctx.settings, dev_email_verification_preview=enabled)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    bootstrap(ctx)
+    generated = []
+    original = email_verification.generate_verification_token
+
+    def capture():
+        result = original()
+        generated.append(result)
+        return result
+
+    with patch.object(email_verification, 'generate_verification_token', side_effect=capture):
+        response = post(ctx, '/auth/register')
+    assert response.status_code == 202
+    user = ctx.db.scalar(select(User))
+    row = ctx.db.scalar(select(EmailVerificationToken))
+    preview = store.take(user.id, settings)
+    raw, digest = generated[0]
+    assert raw not in response.text + str(response.headers) + str(ctx.client.cookies) + caplog.text
+    assert row.token_hash == hashlib.sha256(raw.encode('ascii')).digest() == digest
+    assert row.expires_at - row.created_at == timedelta(hours=1)
+    assert not user.is_active
+    assert 'set-cookie' not in response.headers
+    assert raw not in repr(vars(row))
+    if enabled:
+        assert preview is not None
+        assert preview.link == 'http://localhost:5173/verify-email#token=' + raw
+        assert preview.expires_at == row.expires_at
+        assert raw not in repr(preview)
+        assert store.take(user.id, settings) is None
+    else:
+        assert preview is None
+        assert store.take(user.id, replace(settings, dev_email_verification_preview=True)) is None
+
+
+def test_duplicate_registration_cannot_publish_or_replace_preview(ctx, monkeypatch):
+    from dataclasses import replace
+    from app.development_verification_preview import DevelopmentPreviewStore
+    store = DevelopmentPreviewStore()
+    monkeypatch.setattr('app.auth_routes.development_previews', store)
+    settings = replace(ctx.settings, dev_email_verification_preview=True)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    bootstrap(ctx)
+    first = post(ctx, '/auth/register')
+    user = ctx.db.scalar(select(User))
+    with patch('app.auth_routes.add_registration_verification_token', side_effect=AssertionError('Must not issue')):
+        second = post(ctx, '/auth/register')
+    assert first.status_code == second.status_code == 202
+    assert first.json() == second.json()
+    assert count(ctx, EmailVerificationToken) == 1
+    assert store.take(user.id, settings) is not None
+    assert post(ctx, '/auth/register').status_code == 202
+    assert store.take(user.id, settings) is None
+
+
+@pytest.mark.parametrize('failure', ['insert', 'commit', 'committed_then_error'])
+def test_preview_never_published_for_failed_registration(ctx, monkeypatch, caplog, failure):
+    from dataclasses import replace
+    from app.development_verification_preview import DevelopmentPreviewStore
+    store = DevelopmentPreviewStore()
+    publish = Mock(wraps=store.publish)
+    monkeypatch.setattr(store, 'publish', publish)
+    monkeypatch.setattr('app.auth_routes.development_previews', store)
+    settings = replace(ctx.settings, dev_email_verification_preview=True)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    bootstrap(ctx)
+    real_commit = ctx.db.commit
+    if failure == 'insert':
+        ctx.db.connection().exec_driver_sql("CREATE TRIGGER fail_preview BEFORE INSERT ON email_verification_tokens "
+                                          "BEGIN SELECT RAISE(ABORT, 'private-preview-error'); END")
+        real_commit()
+
+    def commit():
+        if failure == 'insert':
+            return real_commit()
+        ctx.db.flush()
+        if failure == 'committed_then_error':
+            real_commit()
+        raise SQLAlchemyError('private-preview-error')
+
+    with patch.object(ctx.db, 'commit', side_effect=commit):
+        response = post(ctx, '/auth/register')
+    assert response.status_code == 503
+    publish.assert_not_called()
+    assert 'private-preview-error' not in response.text + caplog.text
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == int(failure == 'committed_then_error')
+
+
+def test_preview_tooling_failure_does_not_change_registration_response(ctx, monkeypatch, caplog):
+    from dataclasses import replace
+    settings = replace(ctx.settings, dev_email_verification_preview=True)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    bootstrap(ctx)
+    with patch('app.auth_routes.development_previews.publish', side_effect=RuntimeError('private-preview-error')):
+        response = post(ctx, '/auth/register')
+    assert response.status_code == 202
+    assert count(ctx, User) == count(ctx, EmailVerificationToken) == 1
+    assert 'private-preview-error' not in response.text + caplog.text
+
+
+@pytest.mark.parametrize('active', [False, True])
+def test_preview_enabled_never_discloses_existing_account(ctx, monkeypatch, active):
+    from dataclasses import replace
+    from app.development_verification_preview import DevelopmentPreviewStore
+    store = DevelopmentPreviewStore()
+    monkeypatch.setattr('app.auth_routes.development_previews', store)
+    settings = replace(ctx.settings, dev_email_verification_preview=True)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    user_id = add_user(ctx, active=active)
+    bootstrap(ctx)
+    assert post(ctx, '/auth/register').status_code == 202
+    assert store.take(user_id, settings) is None
+    assert count(ctx, EmailVerificationToken) == 0
+
+
+def verification_record(ctx, *, kind='valid'):
+    from app.email_verification import generate_verification_token
+    user_id = add_user(ctx, active=False)
+    now = datetime.now(UTC)
+    raw, digest = generate_verification_token()
+    row = EmailVerificationToken(user_id=user_id, token_hash=digest,
+                                created_at=now - timedelta(hours=1),
+                                expires_at=now + timedelta(hours=1))
+    if kind == 'expired':
+        row.expires_at = now - timedelta(seconds=1)
+    if kind == 'consumed':
+        row.consumed_at = now - timedelta(minutes=1)
+    if kind == 'ineligible':
+        ctx.db.get(User, user_id).email_verified_at = now
+    ctx.db.add(row)
+    ctx.db.commit()
+    return user_id, row.id, raw
+
+
+def test_verify_email_commits_then_succeeds_without_authentication(ctx, caplog):
+    user_id, token_id, raw = verification_record(ctx)
+    bootstrap(ctx)
+    original_cookie = ctx.client.cookies.get('session')
+    response = post(ctx, '/auth/verify-email', {'token': raw})
+    assert response.status_code == 200
+    assert response.json() == {'message': 'Email verified. You can now sign in.'}
+    assert response.headers['cache-control'] == 'no-store'
+    assert 'set-cookie' not in response.headers
+    assert ctx.client.cookies.get('session') == original_cookie
+    assert raw not in response.text + str(response.headers) + caplog.text
+    assert not ctx.db.in_transaction()
+    with Session(ctx.db.get_bind()) as independent:
+        user = independent.get(User, user_id)
+        row = independent.get(EmailVerificationToken, token_id)
+        assert user.is_active and user.email_verified_at == row.consumed_at
+        assert row.consumed_at is not None
+    assert ctx.client.get('/auth/me').status_code == 401
+    assert ctx.db.scalar(select(AuthSession)).user_id is None
+    replay = post(ctx, '/auth/verify-email', {'token': raw})
+    assert replay.status_code == 400
+    assert replay.json() == {'detail': 'Invalid or unavailable verification token'}
+    assert raw not in replay.text + caplog.text
+
+
+@pytest.mark.parametrize('kind', ['invalid', 'expired', 'consumed', 'ineligible', 'malformed'])
+def test_verify_email_rejects_tokens_with_identical_generic_error(ctx, kind, caplog):
+    user_id, token_id, raw = verification_record(ctx, kind=kind)
+    before = ctx.db.get(EmailVerificationToken, token_id).consumed_at
+    ctx.db.rollback()
+    bootstrap(ctx)
+    submitted = 'x' * 43 if kind == 'invalid' else ('not-a-token' if kind == 'malformed' else raw)
+    response = post(ctx, '/auth/verify-email', {'token': submitted})
+    assert response.status_code == 400
+    assert response.json() == {'detail': 'Invalid or unavailable verification token'}
+    assert response.headers['cache-control'] == 'no-store'
+    assert not ctx.db.get(User, user_id).is_active
+    assert ctx.db.get(EmailVerificationToken, token_id).consumed_at == before
+    assert raw not in response.text + str(response.headers) + caplog.text
+
+
+@pytest.mark.parametrize('completed', [False, True])
+def test_verify_email_commit_failure_is_503_even_after_commit(ctx, completed, caplog):
+    user_id, token_id, raw = verification_record(ctx)
+    bootstrap(ctx)
+    real_commit = ctx.db.commit
+
+    def commit():
+        if completed:
+            real_commit()
+        raise SQLAlchemyError('private-commit-error ' + raw)
+
+    with patch.object(ctx.db, 'commit', side_effect=commit):
+        response = post(ctx, '/auth/verify-email', {'token': raw})
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Authentication service unavailable'}
+    assert 'set-cookie' not in response.headers
+    assert response.headers['cache-control'] == 'no-store'
+    assert raw not in response.text + str(response.headers) + caplog.text
+    assert ctx.db.get(User, user_id).is_active is completed
+    assert (ctx.db.get(EmailVerificationToken, token_id).consumed_at is not None) is completed
+
+
+def test_verify_email_flush_failure_rolls_back_and_is_sanitized(ctx, caplog):
+    user_id, token_id, raw = verification_record(ctx)
+    bootstrap(ctx)
+    with patch.object(ctx.db, 'flush', side_effect=SQLAlchemyError('private-flush-error ' + raw)):
+        response = post(ctx, '/auth/verify-email', {'token': raw})
+    assert response.status_code == 503
+    assert response.json() == {'detail': 'Authentication service unavailable'}
+    assert raw not in response.text + caplog.text
+    assert not ctx.db.get(User, user_id).is_active
+    assert ctx.db.get(EmailVerificationToken, token_id).consumed_at is None
+
+
+@pytest.mark.parametrize('bad', ['missing_session', 'missing_csrf', 'invalid_csrf', 'cross_session',
+                               'untrusted_origin', 'missing_origin', 'content_type'])
+def test_verify_email_requires_session_csrf_origin_and_json(ctx, bad):
+    user_id, token_id, raw = verification_record(ctx)
+    bootstrap(ctx)
+    request_headers = headers(ctx)
+    if bad == 'missing_session':
+        ctx.client.cookies.clear()
+    elif bad == 'missing_csrf':
+        request_headers.pop('X-CSRF-Token')
+    elif bad == 'invalid_csrf':
+        request_headers['X-CSRF-Token'] = '0' * 64
+    elif bad == 'cross_session':
+        ctx.client.cookies.clear()
+        bootstrap(ctx)  # The old request header belongs to the previous session.
+    elif bad == 'untrusted_origin':
+        request_headers['Origin'] = 'http://evil.example'
+    elif bad == 'missing_origin':
+        request_headers.pop('Origin')
+    else:
+        request_headers['Content-Type'] = 'text/plain'
+    response = ctx.client.post('/auth/verify-email', json={'token': raw}, headers=request_headers)
+    assert response.status_code == (415 if bad == 'content_type' else 403)
+    assert response.headers['cache-control'] == 'no-store'
+    assert not ctx.db.get(User, user_id).is_active
+    assert ctx.db.get(EmailVerificationToken, token_id).consumed_at is None
+
+
+def test_verify_email_rate_limit_precedes_activation(ctx):
+    from app.auth_routes import activate_and_commit_verified_user
+    user_id, token_id, raw = verification_record(ctx)
+    bootstrap(ctx)
+    with patch('app.auth_routes.activate_and_commit_verified_user', wraps=activate_and_commit_verified_user) as activate:
+        for _ in range(20):
+            assert post(ctx, '/auth/verify-email', {'token': 'x' * 43}).status_code == 400
+        limited = post(ctx, '/auth/verify-email', {'token': raw})
+    assert limited.status_code == 429
+    assert int(limited.headers['retry-after']) > 0
+    assert limited.headers['cache-control'] == 'no-store'
+    assert activate.call_count == 20
+    assert not ctx.db.get(User, user_id).is_active
+    assert ctx.db.get(EmailVerificationToken, token_id).consumed_at is None
+
+
+@pytest.mark.parametrize('payload', [{}, {'token': None}, {'token': 123},
+                                     {'token': ['synthetic-private-marker']},
+                                     {'token': 'synthetic-private-marker' * 20},
+                                     {'token': 'x' * 43, 'user_id': 1}])
+def test_verify_email_schema_errors_are_secret_safe(ctx, payload, caplog):
+    bootstrap(ctx)
+    response = post(ctx, '/auth/verify-email', payload)
+    assert response.status_code == 422
+    assert response.json() == {'detail': 'Invalid authentication request'}
+    assert response.headers['cache-control'] == 'no-store'
+    assert 'synthetic-private-marker' not in response.text + caplog.text
+
+
+def test_verify_email_rejects_query_only_and_get_requests(ctx):
+    bootstrap(ctx)
+    # Deliberately not a real bearer: never place actual tokens in test URLs.
+    response = ctx.client.post('/auth/verify-email?token=not-a-real-token', json={}, headers=headers(ctx))
+    assert response.status_code == 422
+    response = ctx.client.post('/auth/verify-email?token=not-a-real-token', json={'token': 'x' * 43}, headers=headers(ctx))
+    assert response.status_code == 400
+    assert response.json() == {'detail': 'Invalid email verification request'}
+    assert ctx.client.get('/auth/verify-email').status_code == 405
+
+
+def test_verify_email_accepts_strict_referer_fallback(ctx):
+    _, _, raw = verification_record(ctx)
+    bootstrap(ctx)
+    request_headers = headers(ctx)
+    request_headers.pop('Origin')
+    request_headers['Referer'] = ORIGIN + '/verify-email'
+    response = ctx.client.post('/auth/verify-email', json={'token': raw}, headers=request_headers)
+    assert response.status_code == 200
+
+
+def test_registration_preview_token_verifies_via_json_then_requires_explicit_login(ctx, monkeypatch):
+    from dataclasses import replace
+    from urllib.parse import parse_qs, urlsplit
+    from app.development_verification_preview import DevelopmentPreviewStore
+    store = DevelopmentPreviewStore()
+    monkeypatch.setattr('app.auth_routes.development_previews', store)
+    settings = replace(ctx.settings, dev_email_verification_preview=True)
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    bootstrap(ctx)
+    registered = post(ctx, '/auth/register')
+    assert registered.status_code == 202
+    user_id = ctx.db.scalar(select(User.id))
+    preview = store.take(user_id, settings)
+    assert preview is not None
+    parsed = urlsplit(preview.link)
+    assert parsed.path == '/verify-email' and not parsed.query
+    raw = parse_qs(parsed.fragment)['token'][0]
+    assert post(ctx, '/auth/verify-email', {'token': raw}).status_code == 200
+    assert ctx.client.get('/auth/me').status_code == 401
+    assert post(ctx, '/auth/login').status_code == 200
+    assert ctx.client.get('/auth/me').json() == {'id': user_id, 'email': EMAIL}

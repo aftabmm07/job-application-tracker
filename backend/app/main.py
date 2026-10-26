@@ -4,11 +4,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.auth_config import AuthSettings, get_auth_settings
+from app.email_delivery import build_email_sender
 from app.auth_routes import router as auth_router
 from app.dependencies import get_db
 from app.session_http import no_store
 from app.request_limits import RequestBodyLimitMiddleware
-from app.database import engine
+from app.database import get_database_engine
 from app.models import JobApplication, User
 from app.auth_dependencies import auth_error, get_auth_db, get_current_user, get_mutation_user
 from app.session_service import SessionService, SessionStorageError, commit_session_changes
@@ -20,12 +21,14 @@ from app.schemas import (
 
 # Validate security configuration at startup, before accepting requests.
 auth_settings = get_auth_settings()
+email_sender = build_email_sender(auth_settings)
 
 app = FastAPI(
     title="Job Application Tracker API",
     description="Backend API for managing job applications",
     version="0.1.0"
 )
+app.state.email_sender = email_sender
 
 app.add_middleware(RequestBodyLimitMiddleware, max_bytes=auth_settings.json_max_body_bytes)
 
@@ -60,7 +63,7 @@ def health_check():
 @app.get("/health/db")
 def database_health():
     try:
-        with engine.connect() as connection:
+        with get_database_engine().connect() as connection:
             connection.execute(text("SELECT 1"))
 
         return {

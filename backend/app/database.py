@@ -10,11 +10,11 @@ from app.database_engine import select_database_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Demo mode uses only explicit process environment, never the ordinary .env.
-if os.environ.get("APP_DATABASE_MODE") != "demo":
+# Isolated modes use only explicit process environment, never the ordinary .env.
+if os.environ.get("APP_DATABASE_MODE") not in {"demo", "stack"}:
     load_dotenv(PROJECT_ROOT / ".env")
-    if os.environ.get("APP_DATABASE_MODE") == "demo":
-        raise DatabaseConfigurationError("APP_DATABASE_MODE=demo must be exported, not loaded from .env")
+    if os.environ.get("APP_DATABASE_MODE") in {"demo", "stack"}:
+        raise DatabaseConfigurationError("Isolated APP_DATABASE_MODE must be exported, not loaded from .env")
 
 
 # Fail before engine creation, including during normal app.main/Uvicorn imports.

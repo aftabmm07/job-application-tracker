@@ -10,10 +10,24 @@ from sqlalchemy.exc import CompileError
 
 from app.database_config import (
     DEMO_HOST, DEMO_PORT, DEMO_USER, DatabaseConfigurationError,
-    demo_database_target, runtime_database_mode, validate_database_name,
+    demo_database_target, runtime_database_mode, stack_database_target,
+    validate_database_name,
 )
 
 BASELINE = "0001_legacy"
+STACK_TABLES_BY_REVISION = {
+    None: frozenset(),
+    "0001_legacy": frozenset({"job_applications"}),
+    "0002_auth_models": frozenset({"job_applications", "users", "sessions"}),
+    "0003_email_verification_tokens": frozenset({
+        "job_applications", "users", "sessions", "email_verification_tokens"}),
+    "0004_email_verification_outbox": frozenset({
+        "job_applications", "users", "sessions", "email_verification_tokens",
+        "email_verification_outbox"}),
+    "0005_user_profile": frozenset({
+        "job_applications", "users", "sessions", "email_verification_tokens",
+        "email_verification_outbox"}),
+}
 
 
 def _baseline_type_matches(actual, expected, dialect):
@@ -30,6 +44,12 @@ def _baseline_type_matches(actual, expected, dialect):
 
 
 def migration_url():
+    if os.environ.get("APP_DATABASE_MODE") == "stack":
+        target = stack_database_target(os.environ)
+        if os.environ.get("MIGRATION_DATABASE_NAME") != target.name:
+            raise RuntimeError("MIGRATION_DATABASE_NAME must match the selected stack run")
+        return URL.create("postgresql+psycopg", username=target.user, password=target.password,
+                          host=target.host, port=target.port, database=target.name)
     if os.environ.get("APP_DATABASE_MODE") == "demo":
         target = demo_database_target(os.environ)
         if os.environ.get("MIGRATION_DATABASE_NAME") != target.name:
@@ -71,6 +91,33 @@ def check_target(connection, expected_name=None):
             raise RuntimeError("Migration rehearsal requires the public schema")
     elif connection.dialect.name != "sqlite":
         raise RuntimeError("Only PostgreSQL and SQLite migration targets are supported")
+
+
+def check_stack_target(connection, target):
+    """Validate a supplied stack connection and its pre-migration state."""
+    url = connection.engine.url
+    if (connection.dialect.name != "postgresql"
+            or (url.drivername, url.host, url.port, url.username, url.database) !=
+            ("postgresql+psycopg", target.host, target.port, target.user, target.name)
+            or url.password != target.password or url.query):
+        raise RuntimeError("Stack migration connection does not match the selected target")
+    check_target(connection, target.name)
+    if (connection.scalar(text("SELECT current_user")) != target.user
+            or connection.scalar(text("SELECT inet_server_port()")) != target.port):
+        raise RuntimeError("Stack migration server identity does not match the selected run")
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names(schema="public"))
+    if inspector.get_view_names(schema="public") or inspector.get_materialized_view_names(schema="public"):
+        raise RuntimeError("Stack migration schema contains unexpected views")
+    if "alembic_version" in tables:
+        revisions = connection.scalars(text("SELECT version_num FROM public.alembic_version")).all()
+        if len(revisions) != 1 or revisions[0] not in STACK_TABLES_BY_REVISION or revisions[0] is None:
+            raise RuntimeError("Stack migration revision is missing or unexpected")
+        revision = revisions[0]
+    else:
+        revision = None
+    if tables - {"alembic_version"} != STACK_TABLES_BY_REVISION[revision]:
+        raise RuntimeError("Stack migration schema does not match its revision")
 
 
 def verify_legacy_schema(connection):

@@ -157,7 +157,7 @@ running any database commands. This phase deliberately blocks `jobtracker_db`
 from migration tooling. Never apply this branch to the original database without
 a separately approved deployment/migration plan.
 
-The new models require revision `0002_auth_models`. Existing PostgreSQL instances
+The current models require revision `0003_email_verification_tokens`. Existing PostgreSQL instances
 still on the old schema cannot serve ORM application queries from this branch
 until a separately approved migration is completed. Unit tests use isolated SQLite.
 
@@ -344,6 +344,19 @@ Uvicorn after changing them. Never commit `.env` or log configuration dictionari
 | `AUTH_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Required comma-separated exact HTTPS origins. No wildcard, credentials, path, trailing slash, query, fragment, or empty entries. |
 | `PASSWORD_HASH_MAX_CONCURRENCY` | `2` | Optional integer 1–8. Maximum concurrent password operations per process; restart after changing. |
 | `JSON_MAX_BODY_BYTES` | `65536` (64 KiB) | Optional integer 1–1048576. Maximum mutation body size in bytes, before JSON parsing; restart after changing. |
+| `VERIFICATION_FRONTEND_ORIGIN` | Unset | Exact browser origin for verification links; must appear in `AUTH_ALLOWED_ORIGINS`. HTTPS is required in production. Required for private development previews or a configured email sender. No URL path, query, fragment, or credentials. |
+| `EMAIL_DELIVERY_MODE` | `none` | Set to `smtp` in production. `local-capture` is an explicit development-only option; production rejects it before serving requests. |
+| `SMTP_HOST`, `SMTP_PORT` | Unset | Required in SMTP mode. Use a DNS host and explicit port for a server supporting STARTTLS. No URL or plaintext fallback. |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | Unset | Required in SMTP mode. Supply through private environment or a secret manager; never commit or print them. |
+| `SMTP_FROM_EMAIL` | Unset | Required plain, normalized sender address in SMTP mode. Verify ownership and authorization with the chosen mail service. |
+| `SMTP_TIMEOUT_SECONDS` | `5` in SMTP mode | Integer 1–10. Bounds socket connect/read waits; DNS resolution and end-to-end delivery can have separate delays. |
+
+`local-capture` fixes the SMTP destination to `127.0.0.1:11025`; it does not
+accept SMTP settings or `LOCAL_CAPTURE_HOST`/`LOCAL_CAPTURE_PORT` overrides.
+It requires a verification frontend origin of `http://localhost:5173` or
+`http://127.0.0.1:5173` in `AUTH_ALLOWED_ORIGINS`, and cannot be combined with
+the private development preview. Normal `smtp` mode still requires authenticated,
+certificate-validated STARTTLS. No mail-capture configuration is a production fallback.
 
 `POSTGRES_PASSWORD` remains required by the existing database configuration.
 `APP_DATABASE_NAME` is also required in every environment, with no fallback. Use
@@ -354,6 +367,26 @@ over the private project-root `.env`. Production must explicitly configure its
 intended migrated database; no development target is selected automatically.
 These checks validate configuration, not migration state or permission to use a DB.
 `python-dotenv==1.2.4` is now explicitly declared, alongside `pwdlib[argon2]==0.3.1`.
+
+### Future isolated container stack database (configuration only)
+
+The guarded `APP_DATABASE_MODE=stack` is a development-only configuration for a
+future isolated Compose stack. No Dockerfile or stack Compose service has been
+added, and selecting the mode does not create a database or run migrations.
+It requires an explicit `APP_ENV=development`, a new 16-character lowercase
+hexadecimal `STACK_RUN_ID`, and matching explicit settings:
+`STACK_DATABASE_NAME=jobtracker_stack_<run-id>`, `STACK_DATABASE_HOST=db`,
+`STACK_DATABASE_PORT=5432`, `STACK_DATABASE_USER=jobtracker_stack`, and a
+private `STACK_POSTGRES_PASSWORD` of at least 16 characters. The hostname
+`db` is the only allowed internal service name. Stack mode rejects ordinary,
+demo, PostgreSQL client, URL, and custom migration host/port/user overrides;
+production mode rejects the stack target. Runtime and Alembic build the same
+target without loading the ordinary project `.env`. Alembic additionally
+requires `MIGRATION_DATABASE_NAME` to match the derived stack database and
+checks server identity and known schema/revision state before migration work.
+Keep credentials outside tracked files and do not print environment dumps or
+database URLs. Stack provisioning and migration require separate review and
+approval.
 
 ### Isolated disposable MVP demo database
 
@@ -392,6 +425,9 @@ different `DEMO_POSTGRES_PASSWORD`, and export `APP_ENV=development` and
 `MIGRATION_DATABASE_HOST`, `MIGRATION_DATABASE_PORT`, and
 `MIGRATION_DATABASE_USER` unset. For migrations only, set
 `MIGRATION_DATABASE_NAME=jobtracker_demo_<run-id>` using the *same* run ID.
+Set `EMAIL_DELIVERY_MODE=local-capture` only if the separately approved local
+mailbox is in use; otherwise keep delivery mode `none`. Production SMTP is not
+part of this demo setup and `EMAIL_DELIVERY_MODE=smtp` is rejected in demo mode.
 
 Before creation, read-only inspections must establish that the intended Compose
 project, its generated container/network/volume names, and host port `55434`
@@ -432,9 +468,12 @@ python -m alembic current
 
 Alembic refuses an absent or mismatched `MIGRATION_DATABASE_NAME` and validates
 the connected database name before schema changes. `upgrade head` creates the
-versioned schema. The current demo run remains unmigrated.
-A later approved backend start must use the same `DEMO_RUN_ID` and demo password.
-Docker health and metadata were checked; migration and API behavior remain unverified.
+versioned schema, including the dormant outbox table; it does not activate
+outbox delivery. The current demo run remains unmigrated. A later approved backend start must use the same `DEMO_RUN_ID`
+and demo password, without `MIGRATION_DATABASE_NAME` being required. Check
+`/health/db`, then register and verify a disposable account using the approved
+local capture mailbox. Docker health and metadata were checked for the current
+run; migration, API, and mail behavior remain unverified.
 
 Cleanup has two distinct stages. `docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" ps`
 is read-only inspection. `docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" down` stops
@@ -504,7 +543,7 @@ configuration tests use isolated mappings and synthetic test-only values.
 
 ## Versioned schema and authentication models (Phase 14)
 
-`alembic==1.20.0` introduces two reviewed revisions:
+`alembic==1.20.0` manages these versioned revisions:
 
 - `0001_legacy` exactly reproduces the original `job_applications` table. It does
   not add server defaults that were previously only Python/ORM defaults.
@@ -513,6 +552,26 @@ configuration tests use isolated mappings and synthetic test-only values.
   changes application values, or creates accounts/sessions. PostgreSQL uses
   additive ALTER TABLE. SQLite uses Alembic batch copy/recreation to add the FK;
   tests compare every original value and verify all owners remain NULL.
+
+- `0003_email_verification_tokens` adds only `email_verification_tokens`: integer
+  primary key, required user foreign key with ON DELETE CASCADE, unique indexed
+  32-byte SHA-256 digest, indexed user ID, required UTC creation/expiration
+  timestamps, and nullable consumption timestamp. Checks enforce digest length
+  and expiration strictly after creation. No timestamp server defaults are added,
+  matching the model. One-hour lifetime and single-use activation are service
+  rules, not additional database constraints. No existing rows are changed and
+  no tokens or owners are backfilled. Downgrade is disabled to preserve token state.
+
+An already migrated `0002_auth_models` database needs an upgrade, not stamping.
+Only after separate approval of the exact disposable target, use the guarded
+migration workflow below to upgrade to head and check metadata agreement. The
+example names are documentation placeholders, **not approved targets**. Never
+apply these instructions to the original `jobtracker_db`. The receipt-bound
+integration harness has its own procedure in `postgres-integration-tests.md`.
+SQLite migration tests exercise fresh setup, populated 0002 upgrades, schema
+agreement, constraints and record preservation. They do not prove PostgreSQL DDL,
+locking or timestamp behavior; live PostgreSQL validation remains separately gated.
+CI already upgrades to head and runs `alembic check`, so no workflow change is needed.
 
 Users have normalized unique email, an Argon2id-format password hash, UTC creation
 and optional email verification timestamps, and `is_active=false` by default.
@@ -561,7 +620,7 @@ MIGRATION_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m alembic current
 MIGRATION_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m alembic check
 ```
 
-Fresh databases run both revisions, without stamping. Never stamp head to skip
+Fresh databases run all three revisions, without stamping. Never stamp head to skip
 schema creation.
 
 ### Existing legacy database: verify, explicitly stamp, then upgrade
@@ -581,7 +640,7 @@ The verifier is read-only. It checks exact table/column types, lengths, nullabil
 primary key, server defaults/serial sequence, constraints/indexes and unexpected
 views/triggers. Drift must be investigated, never bypassed by stamping. The Alembic
 environment repeats verification for unversioned existing tables and refuses to
-skip directly to head. Stamping only records adoption; the additive revision adds
+skip directly to head. Stamping only records adoption; the additive revisions add
 the new schema. Compare counts AND every legacy field, not counts alone. Confirm
 all legacy user_id values remain NULL and users/sessions are empty.
 
@@ -825,9 +884,11 @@ Origin header, or use the existing automated TestClient suite.
    before returning the generic response; unrelated constraint failures return 503.
    Duplicate registration never changes the stored password. New users remain
    inactive/unverified, and registration creates no authenticated session/cookie.
-3. **Development activation**, described below, is required to test successful login.
-   Public email delivery/verification remains deferred; a normal new registration
-   cannot sign in in production. No response claims that an email has been sent.
+3. **Email verification** uses `POST /auth/verify-email` as documented below.
+   Development-only activation tooling remains available for local tests. Public
+   delivery now has an optional SMTP adapter, but no provider is configured here.
+   Production requires explicit SMTP settings; tokens never appear in registration
+   responses. No response claims that an email has been sent.
 4. **POST /auth/login** uses the same JSON fields and anonymous cookie/CSRF headers.
    Wrong passwords, unknown accounts and inactive/unverified accounts all receive
    401 `Invalid credentials`. Unknown accounts use a precomputed Argon2id dummy
@@ -1160,3 +1221,329 @@ returns promptly; and verify lock/statement timeout rollback. Run under the inte
 READ COMMITTED isolation and test configured alternatives separately. Do not infer
 those PostgreSQL guarantees solely from SQLite tests or SQL compilation. No such
 PostgreSQL write/rehearsal has been performed in this checkpoint.
+
+### Isolated PostgreSQL security integration harness (#61.3D)
+
+See [postgres-integration-tests.md](postgres-integration-tests.md) for the opt-in,
+receipt-bound PostgreSQL 17 harness, safety checks, test coverage, and exact proposed
+creation/execution/cleanup commands. These commands require separate approval.
+They use port 55433 and disposable tmpfs storage, never the original Compose
+container, database, backups, or existing rehearsal databases. The harness and
+integration tests were implemented without running PostgreSQL or Docker operations.
+
+The current workflow requires a fresh private creation receipt, local Docker
+endpoint verification, a dedicated internal network and single-use operation
+leases. Obtain a second read-only safety review before approving any provisioning.
+Do not use earlier raw Docker creation instructions or reset a failed receipt.
+
+### Private development email verification previews
+
+`DEV_EMAIL_VERIFICATION_PREVIEW=false` is the default. Setting it to `true`
+requires `APP_ENV=development`; configuration rejects it in production. This is
+trusted local tooling, not mailbox verification or a public feature. Never enable
+it on a shared or publicly accessible development instance.
+
+New registrations create an inactive user and a SHA-256 verification token hash
+in one transaction, with a one-hour lifetime. Set
+`VERIFICATION_FRONTEND_ORIGIN=http://localhost:5173` explicitly for this local
+preview (and keep it in `AUTH_ALLOWED_ORIGINS`). Only after a successful commit,
+when preview is enabled, a link is retained in private process memory. Registration
+still returns the same generic 202 JSON, with no link or new cookie. Existing
+accounts never receive new tokens or previews. Preview is local tooling, never a
+production delivery fallback.
+
+Retrieval requires a trusted **local debugger in the same Python process** that
+handled registration, or an in-process test harness. After registration returns,
+use the newly created numeric user ID from your local debugging context:
+
+```python
+from app.auth_config import get_auth_settings
+from app.development_verification_preview import development_previews
+
+preview = development_previews.take(new_user_id, get_auth_settings())
+# Inspect preview.link privately in the local debugger if preview is not None.
+# Do not print it, log it, copy it to a file, or attach it to an HTTP response.
+```
+
+The object repr hides the link; inspecting its `.link` explicitly reveals a secret.
+Disable debugger transcripts, console history, automatic locals/error uploads,
+and persistent variable snapshots. Do not enable a network debugger or add a web
+console/preview route. A separate shell importing the module cannot read another
+process's memory. Ordinary Uvicorn CLI usage has no preview retrieval command;
+use local IDE debugging or an in-process harness rather than adding an interface.
+
+The link is `<VERIFICATION_FRONTEND_ORIGIN>/verify-email#token=<secret>`. The fragment
+keeps the token out of HTTP request URLs. The React `/verify-email` page removes
+the fragment before requests, bootstraps CSRF and sends the token in a JSON POST
+to the backend verification endpoint. Browser history/extensions can still retain
+fragments; do not record or share links. Preview retrieval alone does not activate
+the account. See `frontend/README.md` for frontend checks and limitations.
+
+Previews are single retrieval, limited to 100 entries per process, with oldest-entry
+eviction. Expired entries are refused and removed on the next store operation;
+there is no background cleanup or secure memory erasure. Restart/reload loses all
+previews, and workers have separate stores. Without a configured sender, disabled
+preview discards the raw token; a failed/uncertain commit never publishes a candidate. A preview tooling
+failure after commit silently drops the preview and leaves the generic response
+unchanged. Duplicate retries cannot recover or regenerate a lost preview.
+
+### Verification delivery foundation
+
+`app/email_delivery.py` defines an injectable `EmailSender` interface and a
+standard-library SMTP adapter; no provider or credentials are supplied. SMTP
+mode constructs the adapter at application import without opening a connection.
+Production refuses startup unless SMTP mode is fully configured and the trusted
+verification frontend origin is an allowed HTTPS origin. Tests can override the
+`get_email_sender` dependency with a fake. The adapter validates addresses and
+the fragment link, requires certificate-validated STARTTLS before login or mail
+submission, and sends plain text. It neither stores message content nor logs
+SMTP exceptions, credentials, or links. A configured sender address must be
+authorized by the chosen service; configuration alone cannot prove delivery.
+Neither the private preview nor `EMAIL_DELIVERY_MODE=none` is a production fallback.
+
+#### Opt-in disposable local mail capture
+
+For a local browser demo, `compose.mail-capture.yaml` defines **only** a mail
+capture service. It has no PostgreSQL service, database volume, shared application
+volume, or dependency on `compose.yaml`. It publishes SMTP on
+`127.0.0.1:11025` and its mailbox UI on `127.0.0.1:18025`. Mail data is kept
+on container tmpfs and disappears when the container is removed. Captured
+messages contain live verification links: keep the UI local, use disposable
+test addresses, and do not export messages, logs, screenshots, or browser HARs.
+
+This file is deliberately opt-in and requires two operator-provided values:
+`MAIL_CAPTURE_PROJECT` must be a new, unique Compose project name, and
+`MAIL_CAPTURE_IMAGE` must be a reviewed immutable Mailpit image reference
+(prefer an image digest). No image is selected or pulled by the repository.
+After separately checking that the project name and both host ports are unused,
+an approved operator can run the mail-only file by itself:
+
+```bash
+docker compose -f compose.mail-capture.yaml up -d
+```
+
+Do not add `-f compose.yaml` or use the original Compose project. Retain the
+exact `MAIL_CAPTURE_PROJECT` and `MAIL_CAPTURE_IMAGE` values for cleanup. Only
+after verifying the created container belongs to that exact disposable project,
+remove it with `docker compose -f compose.mail-capture.yaml down` using the same
+values. Do not use `down -v`, remove unrelated containers, or touch backups.
+Docker Desktop/WSL loopback forwarding and the chosen image are not yet live-verified.
+
+For the backend **only after an independently approved migrated demo database is
+available**, set `APP_ENV=development`, `EMAIL_DELIVERY_MODE=local-capture`,
+`VERIFICATION_FRONTEND_ORIGIN=http://localhost:5173`, and
+`DEV_EMAIL_VERIFICATION_PREVIEW=false`. Ensure `AUTH_ALLOWED_ORIGINS` includes
+that exact origin and remove any `SMTP_*` settings. Use `http://localhost:5173`
+consistently in the browser. Registration and resend use the same generic
+responses as before. Open the captured message privately in the mailbox UI,
+then open its fragment-based `/verify-email` link. Capture mode sends to the
+fixed loopback listener without STARTTLS or authentication; it must never be
+used on a shared or public host. If the listener is absent, sending fails with
+a sanitized error and a new registration is rolled back where possible.
+
+The mail-only file does not approve or provision a database. In particular,
+`jobtracker_db` and the existing `job-tracker-db` container remain protected;
+never start the original `compose.yaml` as part of this demo procedure.
+
+Development with delivery mode `none` retains the existing generic 202 behavior. Its
+response says only that registration was received; it does **not** claim email was
+sent. With preview disabled, the new account remains inactive and its raw token
+is discarded, so local development must configure a sender or private preview
+to complete verification. No public preview endpoint or plaintext-token file exists.
+
+For a new account with a sender, registration stages the user and SHA-256 token
+hash, calls the sender before committing, then commits. The sender receives the
+normalized recipient, a link whose bearer is only in the URL fragment, and the
+one-hour expiry. A sender exception triggers a best-effort rollback and the same
+generic 202 response as a duplicate address; no delivery is claimed. A failed
+commit returns a sanitized 503 and never publishes a private preview. Email and
+database commit cannot be atomic: delivery may have been accepted before a
+commit fails, leaving an unusable emailed link. A connection failure during commit
+can also make the database outcome uncertain. Never automatically retry such a
+transaction; a separately designed resend flow will be needed for recovery.
+Synchronous delivery holds a database transaction open. SMTP socket waits are
+bounded by `SMTP_TIMEOUT_SECONDS`, but DNS and external delivery can still delay
+or fail. Do not automatically retry a timeout or an uncertain acceptance. Raw
+links must not appear in logs,
+exception text, response bodies, cookies, or telemetry.
+
+`POST /auth/resend-verification` accepts only `{"email": "person@example.com"}`.
+Bootstrap an anonymous session with `GET /auth/csrf`, then send the JSON request
+with its session cookie, trusted `Origin`, and `X-CSRF-Token` header. Valid
+requests return HTTP 202 with the same body for unknown, active, cooling-down,
+rate-limited, and sender-unavailable accounts:
+`{"message":"If this address needs verification, instructions will be sent when available."}`.
+The response does not confirm delivery. It has `Cache-Control: no-store` and no
+`Retry-After` header. Invalid CSRF/origin, content type, and request bodies still
+receive their normal security or validation errors. This endpoint applies a
+process-local limit of 20 requests per IP per 15 minutes and 3 requests per
+normalized email per hour, before account lookup. Production needs a shared
+limiter across workers and a suitable reverse-proxy limit; these local limits
+alone do not prevent distributed abuse.
+
+For an eligible inactive, unverified user with a configured sender and trusted
+frontend origin, the endpoint calls `resend_verification_for_user()`. The service
+uses a ten-minute cooldown measured from the latest token's creation time,
+consumes all unused prior tokens, stages one new hashed token with a one-hour
+expiry, flushes, calls the sender, and commits. Ineligible/cooldown/delivery
+failure returns the same generic 202 response; a successful rollback preserves
+earlier tokens. Storage or commit errors are sanitized. An accepted email
+followed by an uncertain commit can still contain an unusable link. Development
+preview is not a delivery fallback, and no external delivery provider is included.
+
+Activation and resend now acquire PostgreSQL row locks in the same order: user
+first, then token rows. Activation first reads only a token's owner ID without
+locking, locks the user, locks and re-reads the token, then checks expiry against
+fresh wall-clock time. Resend checks eligibility and cooldown after the user lock.
+PostgreSQL FOR UPDATE and lock/statement timeouts need separate live validation.
+SQLite ignores FOR UPDATE; offline file-backed tests use an early SQLite writer
+reservation to serialize writers, which does not prove PostgreSQL row-lock,
+deadlock, or multi-worker behavior. SMTP has only mocked offline coverage; no
+provider acceptance or actual inbox delivery has been verified. Synchronous
+resend delivery can take longer for eligible accounts than unknown addresses,
+creating a potential timing-enumeration signal despite identical HTTP bodies.
+
+### Email verification API
+
+`POST /auth/verify-email` accepts only a JSON body with `{"token": "<secret>"}`.
+No query parameters are supported; never put real tokens into API URLs, since
+proxy/server access logging can happen before rejection. Missing/wrong-typed,
+oversized or extra fields return generic 422 validation errors. Malformed token
+strings and invalid, expired, consumed or ineligible tokens all return 400 with
+`{"detail": "Invalid or unavailable verification token"}`.
+
+First obtain a cookie and session-bound CSRF token using `GET /auth/csrf` with a
+trusted Origin. Submit JSON using that cookie, `X-CSRF-Token`, trusted Origin
+(or the existing strict Referer fallback), and `Content-Type: application/json`.
+A fresh anonymous session is sufficient, including when opening a link in a new
+browser. Security failures return 403, unsupported content types 415. All auth
+responses use `Cache-Control: no-store`.
+
+Verification attempts passing security and schema checks are limited to 20 per
+IP per 15 minutes, before activation. Excess attempts return 429 with Retry-After.
+This shares the existing bounded, per-process limiter; production still needs
+shared limits and trusted proxy/client-IP configuration.
+
+Success is 200 with `{"message": "Email verified. You can now sign in."}`, only
+after activation and token consumption commit together. No login, session rotation,
+new cookie or identity data is returned. Storage errors return generic 503
+`{"detail": "Authentication service unavailable"}`. A commit connection failure
+may leave the outcome uncertain; no success is returned, and replay can then fail
+because the first transaction actually committed. Do not automatically retry a
+database transaction or treat every commit exception as proof of rollback.
+
+The React page reads the token from the fragment into memory, promptly removes
+the fragment using `history.replaceState`, bootstraps CSRF, and submits it
+in the JSON body with cookies. Do not store it in localStorage, put it in API query
+parameters, or send it to analytics/error reporters. Use HTTPS outside local
+development and keep request-body logging and exception-local capture disabled.
+Registration still returns generic 202 and never exposes tokens. Email delivery
+remains deferred.
+
+Offline tests (SQLite only; no services or infrastructure):
+
+```bash
+cd backend
+RUN_POSTGRES_OWNERSHIP_TESTS=0 RUN_ISOLATED_POSTGRES_TESTS=0 \
+  python -m pytest -q tests/test_auth_api.py tests/test_auth_config.py \
+  tests/test_email_verification.py tests/test_email_verification_activation.py \
+  tests/test_development_verification_preview.py
+```
+
+### Shared database configuration guards (offline Phase 1)
+
+`APP_DATABASE_MODE` accepts exactly `ordinary` or `disposable`; omission preserves
+ordinary mode. Explicit empty/unknown values fail before engine creation. Ordinary
+mode still requires `APP_DATABASE_NAME` and `POSTGRES_PASSWORD`, and uses
+`127.0.0.1:5432` with role `jobtracker`. `APP_DATABASE_HOST`, `APP_DATABASE_PORT`
+and `APP_DATABASE_USER` do not enable configuration overrides: conflicting values
+are rejected instead of silently ignored.
+
+Disposable mode is **not implemented**: startup always fails before engine creation,
+including when ordinary credentials are present. It is forbidden in production.
+No receipt, test opt-in or example database name enables disposable runtime access
+in this phase. Receipt/lease validation and guarded engine selection require a later
+review; no networking or infrastructure approval is implied here.
+
+Runtime and migration database names share strict lowercase ASCII identifier rules
+(1–63 characters, starting with a letter, then letters/digits/underscores). Both
+reject `jobtracker_db`, `postgres`, `template0`, and `template1`. Supplied PostgreSQL
+migration connections also validate the expected name before issuing identity SQL,
+and validate the actual database identity afterward. These checks do not retroactively
+prevent a caller from opening a supplied connection: its creator must enforce the
+preconnection guards. Valid names are not proof of disposable provenance or approval.
+Ordinary Alembic host/port/role settings remain separate from runtime settings.
+
+### Offline browser receipt preflight (Phase 2)
+
+`scripts.browser_database_validation.validate_browser_database()` validates local
+receipt/lease evidence only. It requires `APP_DATABASE_MODE=disposable`, development
+mode, `APPROVE_BROWSER_INTEGRATION=1`, the existing isolated-test opt-in,
+`PG_TEST_RECEIPT`, matching `PG_TEST_OPERATION_NONCE`, and `BROWSER_DATABASE_NAME`
+equal to that receipt's generated API database. Credentials come exclusively from
+the private receipt; ordinary credentials/targets, migration overrides and other
+PG settings are rejected. The endpoint remains `127.0.0.1:55433`.
+
+The dedicated `browser-integration` lease is checked using the existing receipt
+expiry, approved configuration, process identity and nonce mechanisms. No command
+issues this lease yet. Existing test/provision/cleanup leases cannot substitute for
+it, and browser leases cannot authorize existing harness operations. These flags
+are future operator acknowledgments, not proof of external approval by themselves.
+
+**Disposable runtime startup remains blocked.** A successful offline preflight
+returns a sensitive connection URL, not permission to connect. Do not print or
+persist it. It does not inspect Docker, verify a live server marker, prove an
+exclusive operation lock is held, or verify migration state. A later phase must
+issue/hold an exclusive operation lease, repeat validation immediately before
+connections, check live immutable provenance and PostgreSQL identity, and handle
+lease expiry during serving. No existing environment is approved or modified by
+this offline work; the networking blocker remains unresolved.
+
+### Guarded engine selection (offline Phase 3)
+
+`app.database_engine.select_database_engine()` is the explicit selection boundary.
+Ordinary mode retains the existing driver, credentials, fixed endpoint and lazy
+SQLAlchemy connection behavior. `app.database` selects once at import and binds
+`SessionLocal`; `/health/db` obtains that same bind through `get_database_engine()`.
+Authentication and CRUD continue using the shared `get_db` dependency. Engine and
+session construction do not open PostgreSQL connections; health requests would.
+
+Disposable selection always raises before engine creation, even with browser
+approval flags or receipt/nonce settings present. The Phase 2 preflight is not
+invoked by runtime selection and cannot enable it. No engine URL override or
+fallback is offered. Browser-lease issuance, live provenance/server checks and
+explicit operation authorization must be implemented and reviewed separately.
+No services or infrastructure are enabled by this change.
+
+
+### Offline browser lease lifecycle (Phase 4)
+
+`scripts.browser_operation.browser_operation()` is a Python-only context manager,
+not a CLI operation or server launcher. It requires the Phase 2 settings plus
+explicit `approved_run` and `approved_database` arguments matching the receipt's
+run and API database. Only an unused `validated` receipt is eligible. Its existing
+nonblocking exclusive file lock stays held for the entire operation, including
+shutdown. Tests and cleanup cannot acquire it concurrently.
+
+Lease duration defaults to 300 seconds, accepts integers from 1 through 900, and
+is clipped to the remaining receipt lifetime. Validation checks both wall-clock
+expiry and a monotonic deadline. No renewal is provided. The context yields the
+monotonic deadline for a future supervisor; it does not start a timer or server.
+The future trusted activity adapter must enforce that deadline, supply bounded
+`stop(timeout=5)` and `is_stopped()` hooks before starting activity, and ensure all
+workers have terminated. Arbitrary callbacks are not a security boundary and their
+execution time cannot be guaranteed by this offline context manager.
+
+On exit, shutdown and explicit stopped confirmation precede nonce clearance.
+Successful exit records `browser-complete`; activity/expiry errors record `failed`.
+Unconfirmed shutdown retains the nonce in a failed receipt, blocking other
+operations even after the OS lock is released. Interruptions/crashes require
+separate recovery review. No browser-complete or failed receipt is eligible for
+existing tests, cleanup or another browser lease. A separately reviewed cleanup
+path is still required; no resource cleanup occurs here.
+
+This supersedes the earlier lease-issuance limitation for offline Python callers
+only. Disposable engine selection remains blocked. Live provenance checks,
+server/worker supervision, networking, migration readiness and an explicitly
+approved serving operation remain unimplemented. No existing run is authorized by
+these examples or by the offline tests.

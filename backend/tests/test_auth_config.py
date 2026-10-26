@@ -174,3 +174,80 @@ def test_invalid_resource_limits_are_sanitized(name, value, caplog):
         AuthSettings.from_environment({name: value})
     assert name in str(error.value)
     assert "private-invalid-marker" not in str(error.value) + caplog.text
+
+def test_email_verification_preview_disabled_by_default():
+    settings = AuthSettings.from_environment({})
+    assert settings.dev_email_verification_preview is False
+
+
+def test_email_verification_preview_enabled_in_development():
+    settings = AuthSettings.from_environment({
+        "APP_ENV": "development",
+        "DEV_EMAIL_VERIFICATION_PREVIEW": "true",
+        "VERIFICATION_FRONTEND_ORIGIN": "http://localhost:5173",
+    })
+    assert settings.dev_email_verification_preview is True
+    assert settings.verification_frontend_origin == 'http://localhost:5173'
+
+
+def test_preview_requires_explicit_frontend_origin():
+    with pytest.raises(AuthConfigurationError, match='VERIFICATION_FRONTEND_ORIGIN'):
+        AuthSettings.from_environment({'DEV_EMAIL_VERIFICATION_PREVIEW': 'true'})
+
+
+@pytest.mark.parametrize('origin', [
+    'http://evil.example', 'http://localhost:5173/path',
+    'http://localhost:5173/#token=private-token',
+    'https://person:private@example.com',
+])
+def test_verification_frontend_origin_must_be_exact_and_allowed(origin, caplog):
+    with pytest.raises(AuthConfigurationError) as error:
+        AuthSettings.from_environment({'VERIFICATION_FRONTEND_ORIGIN': origin})
+    assert origin not in str(error.value) + caplog.text
+
+
+def test_production_verification_origin_requires_https_and_allowlist():
+    values = production_values() | {'VERIFICATION_FRONTEND_ORIGIN': 'https://tracker.example.com'}
+    assert AuthSettings.from_environment(values).verification_frontend_origin == 'https://tracker.example.com'
+    with pytest.raises(AuthConfigurationError):
+        AuthSettings.from_environment(values | {'VERIFICATION_FRONTEND_ORIGIN': 'http://tracker.example.com'})
+
+
+def test_email_verification_preview_rejected_in_production():
+    with pytest.raises(
+        AuthConfigurationError,
+        match="DEV_EMAIL_VERIFICATION_PREVIEW",
+    ):
+        AuthSettings.from_environment(
+            production_values() | {
+                "DEV_EMAIL_VERIFICATION_PREVIEW": "true",
+            }
+        )
+
+@pytest.mark.parametrize("value", ["yes", "1", "", "invalid"])
+def test_invalid_email_verification_preview_setting(value):
+    with pytest.raises(
+        AuthConfigurationError,
+        match="DEV_EMAIL_VERIFICATION_PREVIEW",
+    ):
+        AuthSettings.from_environment({
+            "DEV_EMAIL_VERIFICATION_PREVIEW": value,
+        })
+
+
+def test_demo_refuses_real_smtp_even_with_complete_smtp_settings():
+    demo_password = "synthetic-demo-only-private-password"
+    values = {
+        "APP_ENV": "development",
+        "APP_DATABASE_MODE": "demo",
+        "DEMO_RUN_ID": "a1b2c3d4e5f60718",
+        "DEMO_POSTGRES_PASSWORD": demo_password,
+        "EMAIL_DELIVERY_MODE": "smtp",
+        "VERIFICATION_FRONTEND_ORIGIN": "http://localhost:5173",
+        "SMTP_HOST": "smtp.example.test", "SMTP_PORT": "587",
+        "SMTP_USERNAME": "demo", "SMTP_PASSWORD": demo_password,
+        "SMTP_FROM_EMAIL": "verify@example.test",
+    }
+    with pytest.raises(AuthConfigurationError, match="forbidden in demo mode") as error:
+        AuthSettings.from_environment(values)
+    assert demo_password not in str(error.value)

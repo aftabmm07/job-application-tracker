@@ -29,7 +29,7 @@ def test_health():
 
 
 def test_database_health_success():
-    with patch("app.main.engine.connect") as mock_connect:
+    with patch("app.database.engine.connect") as mock_connect:
         response = client.get("/health/db")
 
     assert response.status_code == 200
@@ -41,7 +41,7 @@ def test_database_health_success():
 
 
 def test_database_health_failure():
-    with patch("app.main.engine.connect") as mock_connect:
+    with patch("app.database.engine.connect") as mock_connect:
         mock_connect.side_effect = OperationalError(
             "SELECT 1",
             {},

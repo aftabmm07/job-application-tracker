@@ -1,14 +1,24 @@
 from alembic import context
 from sqlalchemy import create_engine, inspect, text
+import os
 
-from app.migration_safety import BASELINE, check_target, migration_url, verify_legacy_schema
+from app.database_config import stack_database_target
+from app.migration_safety import (
+    BASELINE, check_stack_target, check_target, migration_url, verify_legacy_schema,
+)
 from app.models import Base
 
 config = context.config
 
 
 def run(connection, target_name=None):
-    check_target(connection, target_name)
+    if os.environ.get("APP_DATABASE_MODE") == "stack":
+        target = stack_database_target(os.environ)
+        if target_name != target.name:
+            raise RuntimeError("Stack migration target name does not match the selected run")
+        check_stack_target(connection, target)
+    else:
+        check_target(connection, target_name)
     tables = set(inspect(connection).get_table_names())
     current = None
     if "alembic_version" in tables:
