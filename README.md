@@ -79,6 +79,15 @@ The application will allow users to:
 
 For detailed setup instructions, see [Development Setup Guide](docs/setup.md).
 
+## Architecture
+
+The isolated full-container stack is documented as a **proposal; it has not
+been provisioned**. See the [operator runbook](docs/container-stack.md) and
+the source-level diagrams: [system context](docs/architecture/system-context.md),
+[container view](docs/architecture/container-view.md),
+[Docker deployment](docs/architecture/docker-deployment.md), and
+[implemented CI pipeline](docs/architecture/ci-pipeline.md).
+
 ## Development Status
 
 The project is under active development.
