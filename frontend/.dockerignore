@@ -1,0 +1,23 @@
+**
+!Dockerfile
+!nginx.conf
+!package.json
+!package-lock.json
+!index.html
+!vite.config.js
+!src/
+!src/**
+!public/
+!public/**
+
+# Deny private and generated files even inside allowed directories.
+**/.env
+**/.env.*
+**/*.local
+**/*.pem
+**/*.key
+**/*credentials*
+**/secrets/**
+**/node_modules/**
+**/dist/**
+**/.cache/**
