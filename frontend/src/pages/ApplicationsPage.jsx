@@ -3,12 +3,14 @@ import SummaryCards from '../components/SummaryCards.jsx'
 import ApplicationsTable from '../components/ApplicationsTable.jsx'
 import ApplicationForm from '../components/ApplicationForm.jsx'
 import DeleteApplicationDialog from '../components/DeleteApplicationDialog.jsx'
+import ApplicationDetailsDialog from '../components/ApplicationDetailsDialog.jsx'
 import { applicationStatuses } from '../applicationStatuses.js'
 import ApplicationDataState from '../components/ApplicationDataState.jsx'
 
 function ApplicationsPage({ applications, loading, error, refreshApplications,
-  searchQuery, setSearchQuery, statusFilter, setStatusFilter }) {
+  onUnauthorized, searchQuery, setSearchQuery, statusFilter, setStatusFilter }) {
   const [deletingApplication, setDeletingApplication] = useState(null)
+  const [viewingApplication, setViewingApplication] = useState(null)
   const [editingApplication, setEditingApplication] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
@@ -26,18 +28,22 @@ function ApplicationsPage({ applications, loading, error, refreshApplications,
     setStatusFilter('')
   }
 
+  function openAddForm() {
+    setSuccessMessage('')
+    setEditingApplication(null)
+    setShowForm(true)
+  }
+
   return (
     <>
-      <header className="dashboard-header">
-        <p className="eyebrow">Your career, organized</p>
-        <h1>Job Application Tracker</h1>
-        <p>Keep an overview of your applications and your next opportunities.</p>
-        <button type="button" id="add-application-button" className="add-application-button" onClick={() => {
-          setSuccessMessage('')
-          setEditingApplication(null)
-          setShowForm(true)
-        }}>
-          + Add Application
+      <header className="dashboard-header dashboard-header-actions">
+        <div>
+          <p className="eyebrow">Your career, organized</p>
+          <h1>Applications</h1>
+          <p>Keep an overview of your applications and your next opportunities.</p>
+        </div>
+        <button type="button" id="add-application-button" className="add-application-button" onClick={openAddForm}>
+          + Add application
         </button>
       </header>
 
@@ -45,6 +51,7 @@ function ApplicationsPage({ applications, loading, error, refreshApplications,
       {showForm && (
         <ApplicationForm
           application={editingApplication}
+          onUnauthorized={onUnauthorized}
           onCancel={() => setShowForm(false)}
           onSaved={() => {
             setShowForm(false)
@@ -57,6 +64,7 @@ function ApplicationsPage({ applications, loading, error, refreshApplications,
       {deletingApplication && (
         <DeleteApplicationDialog
           application={deletingApplication}
+          onUnauthorized={onUnauthorized}
           onCancel={() => setDeletingApplication(null)}
           onDeleted={() => {
             setDeletingApplication(null)
@@ -64,6 +72,11 @@ function ApplicationsPage({ applications, loading, error, refreshApplications,
             refreshApplications()
           }}
         />
+      )}
+
+      {viewingApplication && (
+        <ApplicationDetailsDialog application={viewingApplication}
+          onClose={() => setViewingApplication(null)} />
       )}
 
       <ApplicationDataState loading={loading} error={error} onRetry={refreshApplications}>
@@ -93,12 +106,14 @@ function ApplicationsPage({ applications, loading, error, refreshApplications,
                 ))}
               </select>
             </div>
-            <button type="button" className="secondary-button" onClick={clearFilters}>Clear filters</button>
+            <button type="button" className="secondary-button" onClick={clearFilters}
+              disabled={!searchQuery && !statusFilter}>Clear filters</button>
           </div>
           {applications.length === 0 ? (
             <div className="empty-state" role="status">
               <h3>No applications yet</h3>
-              <p>Your saved applications will appear here when available.</p>
+              <p>Add your first application to start tracking your search.</p>
+              <button type="button" onClick={openAddForm}>Add your first application</button>
             </div>
           ) : filteredApplications.length === 0 ? (
             <div className="empty-state">
@@ -106,7 +121,7 @@ function ApplicationsPage({ applications, loading, error, refreshApplications,
               <p>Try a different company, job title, or status, or clear the filters.</p>
             </div>
           ) : (
-            <ApplicationsTable applications={filteredApplications} onEdit={(application) => {
+            <ApplicationsTable applications={filteredApplications} onView={setViewingApplication} onEdit={(application) => {
               setSuccessMessage('')
               setEditingApplication(application)
               setShowForm(true)

@@ -1,0 +1,4 @@
+# Reviewed universal wheel for the installer used locally and in CI.
+# Wheel-only installation avoids unlocked source-build dependencies.
+pip==26.2 \
+    --hash=sha256:931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad

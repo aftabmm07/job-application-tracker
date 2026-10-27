@@ -1,16 +1,10 @@
-function formatDate(date) {
-  if (!date) return 'Not provided'
+import { formatDate } from '../applicationDates.js'
+import ApplicationActions from './ApplicationActions.jsx'
 
-  // Backend dates are YYYY-MM-DD. Use local calendar parts to avoid timezone shifts.
-  const [year, month, day] = date.split('-').map(Number)
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
-    new Date(year, month - 1, day),
-  )
-}
-
-function ApplicationsTable({ applications, onEdit, onDelete }) {
+function ApplicationsTable({ applications, onView, onEdit, onDelete }) {
   return (
-    <div className="table-scroll" tabIndex={0} role="region" aria-label="Job applications; scroll horizontally on smaller screens">
+    <>
+    <div className="table-scroll" tabIndex={0} role="region" aria-label="Job applications table">
       <table>
         <caption className="visually-hidden">Job applications, newest records first</caption>
         <thead>
@@ -36,24 +30,34 @@ function ApplicationsTable({ applications, onEdit, onDelete }) {
               </td>
               <td>{formatDate(application.application_date)}</td>
               <td>
-                <div className="row-actions">
-                  <button type="button" className="secondary-button"
-                    aria-label={`Edit ${application.job_title} at ${application.company_name}`}
-                    onClick={() => onEdit(application)}>
-                    Edit
-                  </button>
-                  <button type="button" className="danger-button"
-                    aria-label={`Delete ${application.job_title} at ${application.company_name}`}
-                    onClick={() => onDelete(application)}>
-                    Delete
-                  </button>
-                </div>
+                <ApplicationActions application={application} onView={onView} onEdit={onEdit} onDelete={onDelete} />
               </td>
             </tr>
           ))}
         </tbody>
       </table>
     </div>
+    <ul className="application-card-list" aria-label="Job applications">
+      {applications.map((application) => (
+        <li className="application-card" key={application.id}>
+          <article aria-labelledby={`application-card-title-${application.id}`}>
+            <div className="application-card-heading">
+              <div className="application-card-identity">
+                <p className="application-card-company">{application.company_name}</p>
+                <h3 id={`application-card-title-${application.id}`}>{application.job_title}</h3>
+              </div>
+              <span className={`status-badge status-${application.status}`}>{application.status}</span>
+            </div>
+            <dl className="application-card-meta">
+              <div><dt>Location</dt><dd>{application.location || 'Not provided'}</dd></div>
+              <div><dt>Application date</dt><dd>{formatDate(application.application_date)}</dd></div>
+            </dl>
+            <ApplicationActions application={application} onView={onView} onEdit={onEdit} onDelete={onDelete} />
+          </article>
+        </li>
+      ))}
+    </ul>
+    </>
   )
 }
 

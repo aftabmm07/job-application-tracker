@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { applicationStatuses } from '../applicationStatuses.js'
+import { getCsrfToken } from '../auth/authClient.js'
 
 const fieldLabels = {
   company_name: 'Company name',
@@ -10,7 +11,7 @@ const fieldLabels = {
   job_description: 'Job description',
 }
 
-function ApplicationForm({ application = null, onCancel, onSaved }) {
+function ApplicationForm({ application = null, onCancel, onSaved, onUnauthorized }) {
   const isEditing = application !== null
   const dialogRef = useRef(null)
   const errorRef = useRef(null)
@@ -63,11 +64,18 @@ function ApplicationForm({ application = null, onCancel, onSaved }) {
     pendingRef.current = true
     setPending(true)
     try {
+       const csrfToken = await getCsrfToken()
+
       const response = await fetch(isEditing ? `/applications/${application.id}` : '/applications', {
         method: isEditing ? 'PATCH' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken, },
         body: JSON.stringify(payload),
       })
+
+      if (response.status === 401) {
+        onUnauthorized()
+        return
+      }
 
       if (!response.ok) {
         // FastAPI validation errors use a detail array; other errors may use text.

@@ -14,8 +14,24 @@ jobs:
     name: Run Backend Tests
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: jobtracker
+          POSTGRES_PASSWORD: ci_test_password
+          POSTGRES_DB: jobtracker_auth_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jobtracker -d jobtracker_auth_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
       POSTGRES_PASSWORD: ci_test_password
+      APP_DATABASE_NAME: jobtracker_auth_ci
 
     steps:
       - name: Checkout repository
@@ -24,16 +40,35 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.14.4"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements-bootstrap.txt
+            backend/requirements.in
+            backend/requirements.txt
 
       - name: Install dependencies
         working-directory: backend
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes --only-binary=:all: -r requirements-bootstrap.txt
+          python -m pip install --require-hashes --only-binary=:all: -r requirements.txt
+          python -m pip check
 
       - name: Run Pytest
         working-directory: backend
         run: python -m pytest -v
+
+      - name: Check PostgreSQL migrations on fresh CI database
+        working-directory: backend
+        env:
+          MIGRATION_DATABASE_NAME: jobtracker_auth_ci
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+
+      - name: Check ownership on disposable PostgreSQL CI database
+        working-directory: backend
+        env:
+          MIGRATION_DATABASE_NAME: jobtracker_auth_ci
+          RUN_POSTGRES_OWNERSHIP_TESTS: "1"
+        run: python -m pytest -q tests/test_postgres_ownership.py

@@ -3,31 +3,30 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
-from sqlalchemy.engine import URL
 from sqlalchemy.orm import sessionmaker
+
+from app.database_config import DatabaseConfigurationError, runtime_database_name
+from app.database_engine import select_database_engine
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-load_dotenv(PROJECT_ROOT / ".env")
+# Isolated modes use only explicit process environment, never the ordinary .env.
+if os.environ.get("APP_DATABASE_MODE") not in {"demo", "stack"}:
+    load_dotenv(PROJECT_ROOT / ".env")
+    if os.environ.get("APP_DATABASE_MODE") in {"demo", "stack"}:
+        raise DatabaseConfigurationError("Isolated APP_DATABASE_MODE must be exported, not loaded from .env")
 
-password = os.getenv("POSTGRES_PASSWORD")
 
-if not password:
-    raise RuntimeError("POSTGRES_PASSWORD is not configured")
-
-DATABASE_URL = URL.create(
-    drivername="postgresql+psycopg",
-    username="jobtracker",
-    password=password,
-    host="127.0.0.1",
-    port=5432,
-    database="jobtracker_db",
-)
-
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# Fail before engine creation, including during normal app.main/Uvicorn imports.
+# No environment has a fallback target; production must also select explicitly.
+DATABASE_URL, engine = select_database_engine(os.environ)
 
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
 )
+
+
+def get_database_engine():
+    """The same selected bind used by application/authentication sessions."""
+    return SessionLocal.kw['bind']

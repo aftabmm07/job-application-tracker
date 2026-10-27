@@ -14,6 +14,9 @@ class ApplicationStatus(str, Enum):
 
 
 class JobApplicationFields(BaseModel):
+    # Ownership and all other undeclared fields are never accepted from clients.
+    model_config = ConfigDict(extra="forbid")
+
     @field_validator("company_name", "job_title", check_fields=False)
     @classmethod
     def validate_required_text(cls, value: str) -> str:

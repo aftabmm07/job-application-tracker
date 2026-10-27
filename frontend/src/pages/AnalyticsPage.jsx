@@ -9,7 +9,7 @@ function AnalyticsPage({ applications, loading, error, refreshApplications }) {
         <h1>Analytics</h1>
         <p>Explore the current status and monthly activity of all your applications.</p>
       </header>
-      <ApplicationDataState loading={loading} error={error} onRetry={refreshApplications}>
+      <ApplicationDataState loading={loading} error={error} onRetry={refreshApplications} context="analytics">
         <ApplicationAnalytics applications={applications} />
       </ApplicationDataState>
     </>

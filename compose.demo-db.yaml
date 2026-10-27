@@ -1,0 +1,22 @@
+# Opt-in PostgreSQL demo only. Never combine with compose.yaml.
+# A new 16-character lowercase hex DEMO_RUN_ID names this project and database.
+name: jobtracker-demo-${DEMO_RUN_ID:?Set a fresh 16-character lowercase hex DEMO_RUN_ID}
+services:
+  demo_db:
+    image: postgres:17
+    restart: "no"
+    environment:
+      POSTGRES_USER: jobtracker_demo
+      POSTGRES_PASSWORD: ${DEMO_POSTGRES_PASSWORD:?Set a private demo-only database password}
+      POSTGRES_DB: jobtracker_demo_${DEMO_RUN_ID}
+    ports:
+      - "127.0.0.1:55434:5432"
+    volumes:
+      - demo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobtracker_demo -d jobtracker_demo_${DEMO_RUN_ID}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+volumes:
+  demo_pgdata:

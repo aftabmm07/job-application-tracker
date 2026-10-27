@@ -1,0 +1,19 @@
+# Opt-in development mail only. Never combine with compose.yaml.
+name: ${MAIL_CAPTURE_PROJECT:?Set a unique MAIL_CAPTURE_PROJECT for this run}
+services:
+  capture:
+    image: ${MAIL_CAPTURE_IMAGE:?Set MAIL_CAPTURE_IMAGE to a reviewed immutable Mailpit image reference}
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MP_DATABASE: /data/mailpit.db
+    tmpfs:
+      - /data
+      - /tmp
+    ports:
+      - "127.0.0.1:11025:1025"
+      - "127.0.0.1:18025:8025"

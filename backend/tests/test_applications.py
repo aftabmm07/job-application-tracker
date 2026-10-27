@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -5,11 +7,19 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.main import app, get_db
-from app.models import Base
+from app.models import Base, User
+from app.auth_config import AuthSettings, get_auth_settings
+from app.auth_limits import AuthRateLimiter, get_auth_limiter
+from app.passwords import hash_password
+
+
+@pytest.fixture(scope="module")
+def application_password_hash():
+    return hash_password("application regression test password")
 
 
 @pytest.fixture
-def client():
+def client(application_password_hash):
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -31,13 +41,31 @@ def client():
         finally:
             db.close()
 
+    with TestingSessionLocal() as db:
+        db.add(User(email="regression@example.com", password_hash=application_password_hash,
+                    is_active=True, email_verified_at=datetime.now(UTC)))
+        db.commit()
+
+    settings = AuthSettings.from_environment({})
+    limiter = AuthRateLimiter()
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_auth_settings] = lambda: settings
+    app.dependency_overrides[get_auth_limiter] = lambda: limiter
 
     try:
         with TestClient(app) as test_client:
+            origin = {"Origin": "http://localhost:5173"}
+            csrf = test_client.get("/auth/csrf", headers=origin).json()["csrf_token"]
+            login = test_client.post("/auth/login", headers=origin | {"X-CSRF-Token": csrf},
+                                    json={"email": "regression@example.com",
+                                          "password": "application regression test password"})
+            assert login.status_code == 200
+            csrf = test_client.get("/auth/csrf", headers=origin).json()["csrf_token"]
+            test_client.headers.update(origin | {"X-CSRF-Token": csrf, "Content-Type": "application/json"})
             yield test_client
     finally:
-        app.dependency_overrides.pop(get_db, None)
+        for dependency in (get_db, get_auth_settings, get_auth_limiter):
+            app.dependency_overrides.pop(dependency, None)
         engine.dispose()
 
 
