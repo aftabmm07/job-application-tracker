@@ -1,0 +1,26 @@
+**
+!Dockerfile
+!requirements-bootstrap.txt
+!requirements.txt
+!alembic.ini
+!app/
+!app/**
+!alembic/
+!alembic/**
+
+# Deny private files even if accidentally placed under an allowed directory.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.dump
+**/*.sql
+**/*.sqlite*
+**/*credentials*
+**/*receipt*
+**/secrets/**
+**/backups/**
+**/__pycache__/**
+**/*.py[cod]

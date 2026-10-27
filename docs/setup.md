@@ -371,8 +371,9 @@ These checks validate configuration, not migration state or permission to use a 
 ### Future isolated container stack database (configuration only)
 
 The guarded `APP_DATABASE_MODE=stack` is a development-only configuration for a
-future isolated Compose stack. No Dockerfile or stack Compose service has been
-added, and selecting the mode does not create a database or run migrations.
+future isolated Compose stack. Image definitions and an offline Compose plan
+are documented in [container-stack.md](container-stack.md); none have been
+built or started. Selecting the mode does not create a database or run migrations.
 It requires an explicit `APP_ENV=development`, a new 16-character lowercase
 hexadecimal `STACK_RUN_ID`, and matching explicit settings:
 `STACK_DATABASE_NAME=jobtracker_stack_<run-id>`, `STACK_DATABASE_HOST=db`,

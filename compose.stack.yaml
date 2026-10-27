@@ -1,0 +1,82 @@
+name: jobtracker-stack-${STACK_RUN_ID:?STACK_RUN_ID must be approved}
+
+services:
+  db:
+    image: postgres:17
+    restart: "no"
+    environment:
+      POSTGRES_USER: jobtracker_stack
+      POSTGRES_DB: jobtracker_stack_${STACK_RUN_ID:?STACK_RUN_ID must be approved}
+      POSTGRES_PASSWORD: ${STACK_POSTGRES_PASSWORD:?Private stack password is required}
+    volumes:
+      - stack_pgdata:/var/lib/postgresql/data
+    networks:
+      - private
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobtracker_stack -d jobtracker_stack_${STACK_RUN_ID}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    stop_grace_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: "no"
+    environment:
+      APP_ENV: development
+      APP_DATABASE_MODE: stack
+      STACK_RUN_ID: ${STACK_RUN_ID:?STACK_RUN_ID must be approved}
+      STACK_DATABASE_NAME: jobtracker_stack_${STACK_RUN_ID:?STACK_RUN_ID must be approved}
+      STACK_DATABASE_HOST: db
+      STACK_DATABASE_PORT: "5432"
+      STACK_DATABASE_USER: jobtracker_stack
+      STACK_POSTGRES_PASSWORD: ${STACK_POSTGRES_PASSWORD:?Private stack password is required}
+      CSRF_HMAC_SECRET: ${STACK_CSRF_HMAC_SECRET:?Private stack CSRF secret is required}
+      AUTH_ALLOWED_ORIGINS: http://localhost:18080
+      VERIFICATION_FRONTEND_ORIGIN: http://localhost:18080
+      SESSION_COOKIE_SECURE: "false"
+      EMAIL_DELIVERY_MODE: none
+      DEV_EMAIL_VERIFICATION_PREVIEW: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - edge
+      - private
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: "no"
+    ports:
+      - "127.0.0.1:18080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  edge:
+    driver: bridge
+  private:
+    driver: bridge
+    internal: true
+
+volumes:
+  stack_pgdata:
