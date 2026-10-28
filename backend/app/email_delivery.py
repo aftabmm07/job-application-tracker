@@ -13,6 +13,7 @@ from fastapi import Request
 from app.auth_config import (
     AuthConfigurationError, AuthSettings, LOCAL_CAPTURE_FRONTEND_ORIGINS,
     LOCAL_CAPTURE_SMTP_HOST, LOCAL_CAPTURE_SMTP_PORT,
+    STACK_CAPTURE_FRONTEND_ORIGIN, STACK_CAPTURE_SMTP_HOST, STACK_CAPTURE_SMTP_PORT,
 )
 
 
@@ -91,12 +92,14 @@ class LocalCaptureEmailSender:
                 or settings.verification_frontend_origin not in settings.allowed_browser_origins):
             raise AuthConfigurationError("Local email capture is not safely configured")
         self._origin = settings.verification_frontend_origin
+        self._host = LOCAL_CAPTURE_SMTP_HOST
+        self._port = LOCAL_CAPTURE_SMTP_PORT
 
     def send_verification(self, recipient: str, link: str, expires_at: datetime) -> None:
         try:
             message = _verification_message(recipient, link, expires_at,
                                             self._origin, "verify@jobtracker.test")
-            with smtplib.SMTP(LOCAL_CAPTURE_SMTP_HOST, LOCAL_CAPTURE_SMTP_PORT, timeout=5) as client:
+            with smtplib.SMTP(self._host, self._port, timeout=5) as client:
                 client.ehlo()
                 refused = client.send_message(message)
                 if refused:
@@ -104,6 +107,20 @@ class LocalCaptureEmailSender:
         except Exception:
             # Never expose captured bearer links or SMTP error details.
             raise EmailDeliveryError("Verification delivery unavailable") from None
+
+
+class StackCaptureEmailSender(LocalCaptureEmailSender):
+    """Development stack only; SMTP is confined to the Compose mail network."""
+
+    def __init__(self, settings: AuthSettings):
+        if (settings.environment != "development" or settings.email_delivery_mode != "stack-capture"
+                or settings.smtp is not None or settings.dev_email_verification_preview
+                or settings.verification_frontend_origin != STACK_CAPTURE_FRONTEND_ORIGIN
+                or settings.allowed_browser_origins != (STACK_CAPTURE_FRONTEND_ORIGIN,)):
+            raise AuthConfigurationError("Stack email capture is not safely configured")
+        self._origin = STACK_CAPTURE_FRONTEND_ORIGIN
+        self._host = STACK_CAPTURE_SMTP_HOST
+        self._port = STACK_CAPTURE_SMTP_PORT
 
 
 def build_email_sender(settings: AuthSettings) -> EmailSender | None:
@@ -114,6 +131,8 @@ def build_email_sender(settings: AuthSettings) -> EmailSender | None:
         return None
     if settings.email_delivery_mode == "local-capture":
         return LocalCaptureEmailSender(settings)
+    if settings.email_delivery_mode == "stack-capture":
+        return StackCaptureEmailSender(settings)
     if settings.email_delivery_mode == "smtp":
         return SmtpEmailSender(settings)
     raise AuthConfigurationError("EMAIL_DELIVERY_MODE is invalid")
