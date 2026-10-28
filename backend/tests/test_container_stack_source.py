@@ -14,8 +14,8 @@ STACK = yaml.safe_load(SOURCE)
 
 def test_stack_identity_and_resource_isolation():
     assert STACK["name"] == "jobtracker-stack-${STACK_RUN_ID:?STACK_RUN_ID must be approved}"
-    assert set(STACK["services"]) == {"db", "backend", "frontend"}
-    assert set(STACK["networks"]) == {"edge", "private"}
+    assert set(STACK["services"]) == {"db", "backend", "frontend", "capture"}
+    assert set(STACK["networks"]) == {"edge", "private", "mail"}
     assert STACK["networks"]["private"]["internal"] is True
     assert set(STACK["volumes"]) == {"stack_pgdata"}
     assert all(not values or not values.get("external") and not values.get("name")
@@ -33,7 +33,7 @@ def test_only_frontend_is_published_and_database_is_private():
     assert db["networks"] == ["private"]
     assert db["volumes"] == ["stack_pgdata:/var/lib/postgresql/data"]
     assert "ports" not in db and "ports" not in backend
-    assert backend["networks"] == ["edge", "private"]
+    assert backend["networks"] == ["edge", "private", "mail"]
     assert frontend["networks"] == ["edge"]
     assert frontend["ports"] == ["127.0.0.1:18080:8080"]
     assert all(service["restart"] == "no" for service in (db, backend, frontend))
@@ -58,10 +58,29 @@ def test_database_identity_secrets_and_migrations_are_explicit():
     assert api_env["CSRF_HMAC_SECRET"] == "${STACK_CSRF_HMAC_SECRET:?Private stack CSRF secret is required}"
     assert api_env["AUTH_ALLOWED_ORIGINS"] == api_env["VERIFICATION_FRONTEND_ORIGIN"] == "http://localhost:18080"
     assert api_env["SESSION_COOKIE_SECURE"] == "false"
-    assert api_env["EMAIL_DELIVERY_MODE"] == "none"
+    assert api_env["EMAIL_DELIVERY_MODE"] == "${STACK_EMAIL_DELIVERY_MODE:-none}"
     assert api_env["DEV_EMAIL_VERIFICATION_PREVIEW"] == "false"
     assert "MIGRATION_DATABASE_NAME" not in api_env
     assert "command" not in backend and "entrypoint" not in backend
+
+
+def test_mail_capture_is_disposable_opt_in_and_separate_from_database():
+    capture = STACK["services"]["capture"]
+    assert capture["profiles"] == ["mail-capture"]
+    assert capture["image"] == "${STACK_MAILPIT_IMAGE:-invalid.local/mailpit-digest-required}"
+    assert capture["networks"] == ["mail"]
+    assert "mail" not in STACK["services"]["db"]["networks"]
+    assert "mail" not in STACK["services"]["frontend"]["networks"]
+    assert STACK["networks"]["mail"]["driver"] == "bridge"
+    assert STACK["networks"]["mail"].get("internal") is not True
+    assert capture["ports"] == ["127.0.0.1:18025:8025"]
+    assert capture["environment"] == {"MP_DATABASE": "/data/mailpit.db"}
+    assert capture["tmpfs"] == ["/data", "/tmp"]
+    assert capture["read_only"] is True
+    assert capture["restart"] == "no"
+    assert capture["cap_drop"] == ["ALL"]
+    assert "volumes" not in capture and "depends_on" not in capture
+    assert "1025:" not in SOURCE
 
 
 def test_health_dependencies_and_runbook_safety():
@@ -85,6 +104,10 @@ def test_health_dependencies_and_runbook_safety():
     assert any(line.endswith("up -d --no-deps db") for line in commands)
     assert any(line.endswith("stop frontend backend db") for line in commands)
     assert "unset STACK_RUN_ID COMPOSE_PROJECT_NAME COMPOSE_FILE" in guide
+    assert "COMPOSE_PROFILES" in guide
+    assert 'network inspect "jobtracker-stack-${STACK_RUN_ID}_mail"' in guide
+    assert "For a **first deployment**, the project-scoped `mail` network must be absent" in guide
+    assert "the backend's network declaration may already have created it" in guide
     assert "path != expected" in guide and "settings['STACK_RUN_ID'] != run_id" in guide
     preflight = guide.split("backend python -c '", 1)[1].split("\n   '", 1)[0]
     ast.parse(textwrap.dedent(preflight))

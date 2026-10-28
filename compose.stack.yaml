@@ -37,7 +37,7 @@ services:
       AUTH_ALLOWED_ORIGINS: http://localhost:18080
       VERIFICATION_FRONTEND_ORIGIN: http://localhost:18080
       SESSION_COOKIE_SECURE: "false"
-      EMAIL_DELIVERY_MODE: none
+      EMAIL_DELIVERY_MODE: ${STACK_EMAIL_DELIVERY_MODE:-none}
       DEV_EMAIL_VERIFICATION_PREVIEW: "false"
     depends_on:
       db:
@@ -45,6 +45,7 @@ services:
     networks:
       - edge
       - private
+      - mail
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
       interval: 10s
@@ -71,12 +72,35 @@ services:
       retries: 5
       start_period: 10s
 
+  capture:
+    profiles: ["mail-capture"]
+    # The disabled default is deliberately unusable. Supply a reviewed digest
+    # through STACK_MAILPIT_IMAGE before enabling this profile.
+    image: ${STACK_MAILPIT_IMAGE:-invalid.local/mailpit-digest-required}
+    restart: "no"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      MP_DATABASE: /data/mailpit.db
+    tmpfs:
+      - /data
+      - /tmp
+    ports:
+      - "127.0.0.1:18025:8025"
+    networks:
+      - mail
+
 networks:
   edge:
     driver: bridge
   private:
     driver: bridge
     internal: true
+  mail:
+    driver: bridge
 
 volumes:
   stack_pgdata:

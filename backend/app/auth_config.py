@@ -22,6 +22,9 @@ LOCAL_CAPTURE_SMTP_PORT = 11025
 LOCAL_CAPTURE_FRONTEND_ORIGINS = frozenset({
     "http://localhost:5173", "http://127.0.0.1:5173",
 })
+STACK_CAPTURE_SMTP_HOST = "capture"
+STACK_CAPTURE_SMTP_PORT = 1025
+STACK_CAPTURE_FRONTEND_ORIGIN = "http://localhost:18080"
 
 
 def _positive_integer(values, name, default, maximum):
@@ -187,12 +190,18 @@ class AuthSettings:
         if dev_email_verification_preview and frontend_origin is None:
             raise AuthConfigurationError("VERIFICATION_FRONTEND_ORIGIN is required for development previews")
         delivery_mode = values.get("EMAIL_DELIVERY_MODE", "none").strip().lower()
-        if delivery_mode not in {"none", "smtp", "local-capture"}:
-            raise AuthConfigurationError("EMAIL_DELIVERY_MODE must be none, smtp, or local-capture")
+        if delivery_mode not in {"none", "smtp", "local-capture", "stack-capture"}:
+            raise AuthConfigurationError("EMAIL_DELIVERY_MODE is invalid")
         if values.get("APP_DATABASE_MODE") == "demo" and delivery_mode == "smtp":
             raise AuthConfigurationError("EMAIL_DELIVERY_MODE=smtp is forbidden in demo mode")
+        if values.get("APP_DATABASE_MODE") == "stack" and delivery_mode == "smtp":
+            raise AuthConfigurationError("EMAIL_DELIVERY_MODE=smtp is forbidden in stack mode")
         if delivery_mode == "local-capture" and production:
             raise AuthConfigurationError("EMAIL_DELIVERY_MODE=local-capture is forbidden in production")
+        if delivery_mode == "stack-capture" and (
+            production or values.get("APP_DATABASE_MODE") != "stack"
+        ):
+            raise AuthConfigurationError("EMAIL_DELIVERY_MODE=stack-capture requires a development stack")
         # Capture has no configurable destination. Refuse misleading overrides.
         if any(name in values for name in ("LOCAL_CAPTURE_HOST", "LOCAL_CAPTURE_PORT")):
             raise AuthConfigurationError("Local capture host and port are fixed")
@@ -207,6 +216,12 @@ class AuthSettings:
                     raise AuthConfigurationError("VERIFICATION_FRONTEND_ORIGIN must be a local Vite origin for capture")
                 if dev_email_verification_preview:
                     raise AuthConfigurationError("Development preview cannot be combined with local capture")
+            if delivery_mode == "stack-capture":
+                if (frontend_origin != STACK_CAPTURE_FRONTEND_ORIGIN
+                        or allowed_origins != (STACK_CAPTURE_FRONTEND_ORIGIN,)):
+                    raise AuthConfigurationError("Stack capture requires the exact local frontend origin")
+                if dev_email_verification_preview:
+                    raise AuthConfigurationError("Development preview cannot be combined with stack capture")
         else:
             if frontend_origin is None:
                 raise AuthConfigurationError("VERIFICATION_FRONTEND_ORIGIN is required for SMTP delivery")

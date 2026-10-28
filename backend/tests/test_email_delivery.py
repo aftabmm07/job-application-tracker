@@ -10,7 +10,8 @@ import pytest
 
 from app.auth_config import AuthConfigurationError, AuthSettings
 from app.email_delivery import (
-    EmailDeliveryError, LocalCaptureEmailSender, SmtpEmailSender, build_email_sender,
+    EmailDeliveryError, LocalCaptureEmailSender, StackCaptureEmailSender,
+    SmtpEmailSender, build_email_sender,
 )
 
 
@@ -44,6 +45,83 @@ def capture_values():
         "EMAIL_DELIVERY_MODE": "local-capture",
         "VERIFICATION_FRONTEND_ORIGIN": "http://localhost:5173",
     }
+
+
+def stack_capture_values():
+    return {
+        "APP_ENV": "development", "APP_DATABASE_MODE": "stack",
+        "EMAIL_DELIVERY_MODE": "stack-capture",
+        "VERIFICATION_FRONTEND_ORIGIN": "http://localhost:18080",
+        "AUTH_ALLOWED_ORIGINS": "http://localhost:18080",
+    }
+
+
+def test_stack_capture_uses_only_internal_mailpit_and_fragment_link(monkeypatch):
+    client, calls = fake_smtp()
+    connector = Mock(return_value=client)
+    monkeypatch.setattr("app.email_delivery.smtplib.SMTP", connector)
+    settings = AuthSettings.from_environment(stack_capture_values())
+    capture = build_email_sender(settings)
+    assert isinstance(capture, StackCaptureEmailSender)
+    link = "http://localhost:18080/verify-email#token=" + TOKEN
+    capture.send_verification("person@example.com", link, datetime.now(UTC))
+    connector.assert_called_once_with("capture", 1025, timeout=5)
+    assert [call if isinstance(call, str) else call[0] for call in calls] == ["ehlo", "send"]
+    assert link in calls[-1][1].get_content()
+    assert TOKEN not in repr(capture) + repr(settings)
+
+
+@pytest.mark.parametrize("change", [
+    {"APP_ENV": "production"}, {"APP_DATABASE_MODE": "demo"},
+    {"APP_DATABASE_MODE": "ordinary"}, {"VERIFICATION_FRONTEND_ORIGIN": "http://localhost:5173"},
+    {"VERIFICATION_FRONTEND_ORIGIN": "http://127.0.0.1:18080"},
+    {"AUTH_ALLOWED_ORIGINS": "http://localhost:18080,http://localhost:5173"},
+    {"SMTP_HOST": "capture"}, {"SMTP_PASSWORD": SECRET},
+    {"LOCAL_CAPTURE_HOST": "capture"}, {"DEV_EMAIL_VERIFICATION_PREVIEW": "true"},
+])
+def test_stack_capture_rejects_unsafe_configuration(change, caplog):
+    with pytest.raises(AuthConfigurationError) as captured:
+        AuthSettings.from_environment(stack_capture_values() | change)
+    assert SECRET not in str(captured.value) + repr(captured.value) + caplog.text
+
+
+def test_stack_capture_revalidates_settings_and_redacts_transport_failure(monkeypatch, caplog):
+    settings = AuthSettings.from_environment(stack_capture_values())
+    with pytest.raises(AuthConfigurationError):
+        build_email_sender(replace(settings, environment="production"))
+    connector = Mock(side_effect=OSError(SECRET + TOKEN))
+    monkeypatch.setattr("app.email_delivery.smtplib.SMTP", connector)
+    with pytest.raises(EmailDeliveryError) as captured:
+        build_email_sender(settings).send_verification(
+            "person@example.com", "http://localhost:18080/verify-email#token=" + TOKEN,
+            datetime.now(UTC))
+    assert connector.call_count == 1
+    assert captured.value.__cause__ is None
+    assert SECRET not in str(captured.value) + caplog.text
+    assert TOKEN not in str(captured.value) + caplog.text
+
+
+def test_stack_capture_rejects_wrong_link_origin_before_smtp(monkeypatch):
+    connector = Mock(side_effect=AssertionError("SMTP connection forbidden"))
+    monkeypatch.setattr("app.email_delivery.smtplib.SMTP", connector)
+    capture = build_email_sender(AuthSettings.from_environment(stack_capture_values()))
+    with pytest.raises(EmailDeliveryError):
+        capture.send_verification(
+            "person@example.com", "http://localhost:5173/verify-email#token=" + TOKEN,
+            datetime.now(UTC))
+    connector.assert_not_called()
+
+
+def test_stack_mode_does_not_allow_real_smtp():
+    with pytest.raises(AuthConfigurationError, match="EMAIL_DELIVERY_MODE"):
+        AuthSettings.from_environment(smtp_values() | {"APP_DATABASE_MODE": "stack"})
+
+
+def test_stack_capture_requires_explicit_stack_database_mode():
+    values = stack_capture_values()
+    values.pop("APP_DATABASE_MODE")
+    with pytest.raises(AuthConfigurationError, match="development stack"):
+        AuthSettings.from_environment(values)
 
 
 def fake_smtp(refused=None, failure=None):

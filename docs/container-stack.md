@@ -1,7 +1,7 @@
 # Isolated local container stack — operator runbook
 
-This is an **offline plan**, not approval to build, start, connect to, or migrate
-any container or database. Review every future command against the approved run
+This runbook describes separately approved operations; reading it does not
+authorize any container or database change. Review every future command against the approved run
 identity. Use only `compose.stack.yaml`; never combine it with `compose.yaml`,
 `compose.demo-db.yaml`, or `compose.mail-capture.yaml`.
 
@@ -13,18 +13,19 @@ identity. Use only `compose.stack.yaml`; never combine it with `compose.yaml`,
   `jobtracker_stack_<run-id>`, and role is `jobtracker_stack`. Compose scopes the
   `stack_pgdata` volume and both networks to that project. There are no external
   volumes, networks, or fixed container names.
-- Only the frontend publishes a port: `127.0.0.1:18080:8080`. PostgreSQL and
-  FastAPI have no host ports. PostgreSQL joins only the internal private network;
-  the frontend joins only the edge network; the backend joins both.
+- By default, only the frontend publishes a port: `127.0.0.1:18080:8080`.
+  PostgreSQL and FastAPI have no host ports. PostgreSQL joins only the internal
+  private network; the frontend joins only the edge network; the backend joins
+  both and a dedicated mail network. The optional Mailpit UI publishes only
+  `127.0.0.1:18025:8025`; Mailpit SMTP has no host port.
 - This is an HTTP **development** demo. `SESSION_COOKIE_SECURE=false` is valid
   only here. Do not expose port 18080 beyond loopback or treat this as a public
   production deployment. The stack database mode refuses `APP_ENV=production`.
-- The email outbox remains disabled. `EMAIL_DELIVERY_MODE=none` prevents real
-  outbound email, but new accounts cannot complete email verification through
-  this stack. The existing local-capture sender is fixed to loopback *inside*
-  the backend container and to Vite origins on port 5173. A Mailpit sidecar or
-  shared network namespace needs a separate design and approval; do not attach
-  the existing Mailpit container or change authentication settings to bypass it.
+- The email outbox remains disabled. `EMAIL_DELIVERY_MODE=none` is the default;
+  it cannot deliver verification links. `stack-capture` is an explicit development-only
+  mode fixed to `capture:1025` on the dedicated mail network and to the exact
+  link/browser origin `http://localhost:18080`. It never falls back to production
+  SMTP or the existing host-local capture service.
 
 ## Private settings, before any Docker operation
 
@@ -34,7 +35,7 @@ private file outside the repository containing a fresh PostgreSQL password and
 a separate stable CSRF secret. It never prints their values.
 
 ```bash
-unset STACK_RUN_ID COMPOSE_PROJECT_NAME COMPOSE_FILE STACK_POSTGRES_PASSWORD STACK_CSRF_HMAC_SECRET
+unset STACK_RUN_ID COMPOSE_PROJECT_NAME COMPOSE_FILE COMPOSE_PROFILES STACK_POSTGRES_PASSWORD STACK_CSRF_HMAC_SECRET STACK_EMAIL_DELIVERY_MODE STACK_MAILPIT_IMAGE
 read -r -p 'Approved STACK_RUN_ID: ' STACK_RUN_ID
 [[ "$STACK_RUN_ID" =~ ^[0-9a-f]{16}$ ]] || { echo 'Invalid run ID'; exit 1; }
 export STACK_RUN_ID
@@ -95,7 +96,7 @@ if (not re.fullmatch(r'[0-9a-f]{16}', run_id) or path != expected
         or path.stat().st_uid != os.getuid()
         or stat.S_IMODE(path.stat().st_mode) != 0o600
         or any(name in os.environ for name in (
-            'COMPOSE_PROJECT_NAME', 'COMPOSE_FILE', 'STACK_POSTGRES_PASSWORD',
+            'COMPOSE_PROJECT_NAME', 'COMPOSE_FILE', 'COMPOSE_PROFILES', 'STACK_POSTGRES_PASSWORD',
             'STACK_CSRF_HMAC_SECRET'))):
     raise SystemExit('Stack settings preflight failed')
 lines = [line.partition('=') for line in path.read_text().splitlines()]
@@ -235,7 +236,103 @@ resources, and port collisions independently immediately before mutations.
    checks show process/connectivity health; they do **not** prove that Alembic
    reached the expected revision. Check revision/schema separately before
    browser mutations. Registration-to-verification remains blocked while email
-   delivery is disabled.
+   delivery is disabled. The opt-in capture procedure below is a separate change.
+
+## Optional verification mail capture
+
+This procedure is for the already reviewed isolated stack only. Obtain separate
+approval before starting Mailpit **and** before recreating the backend with a
+different delivery mode. Do not combine this file with `compose.mail-capture.yaml`
+or attach the existing Mailpit container. The default stack and database volume
+remain unchanged. Never use `stack-capture` in production.
+
+Before either operation, repeat the project/daemon identity and private-file
+checks above. Pass the same exact `-f compose.stack.yaml` and
+`-p "jobtracker-stack-${STACK_RUN_ID}"` arguments. Confirm the project-scoped
+`capture` container does not already exist, inspect the project-scoped `mail`
+network, and stop on any unexpected resource. Check that port 18025 is unused
+in WSL and Windows; do not stop another listener. Check that the Mailpit image
+reference is the reviewed official `docker.io/axllent/mailpit:v1.32.0` image
+with a **complete, independently verified** `sha256:` digest for the intended
+platform. The repository deliberately supplies no image digest: the disabled
+default image is an unusable sentinel. Never use a floating tag or start this
+profile until an operator supplies and reviews `STACK_MAILPIT_IMAGE`.
+For a **first deployment**, the project-scoped `mail` network must be absent
+along with the other new project resources. For the **already running stack**,
+the backend's network declaration may already have created it, even though
+Mailpit has never started. In that case, require the previously approved
+network ID, exact Compose project/network labels, and only the expected backend
+attachment before proceeding. A name match alone is insufficient; if no prior
+network identity is available, stop for review. Keep `COMPOSE_PROFILES` unset
+so unrelated Compose commands cannot silently enable capture.
+The `mail` bridge is not marked `internal`: Mailpit is attached only to that
+network, and host publication of its loopback UI on an internal-only bridge is
+not established for this Docker environment. Verify the actual UI binding
+before using the mailbox. The network is project-scoped, but `internal: true`
+would require separate live compatibility review.
+Before either opt-in Compose command, validate the image reference locally
+without printing it or rendering the resolved Compose configuration:
+
+```bash
+[[ "$STACK_MAILPIT_IMAGE" =~ ^docker\.io/axllent/mailpit:v1\.32\.0@sha256:[0-9a-f]{64}$ ]] || { echo 'Reviewed Mailpit digest required'; exit 1; }
+```
+
+```bash
+docker --context default ps -a --filter "label=com.docker.compose.project=jobtracker-stack-${STACK_RUN_ID}" --filter "label=com.docker.compose.service=capture" --format '{{.ID}} {{.Names}}'
+docker --context default network ls --filter "name=jobtracker-stack-${STACK_RUN_ID}_mail" --format '{{.Name}}'
+docker --context default network inspect "jobtracker-stack-${STACK_RUN_ID}_mail" --format '{{.Id}} {{index .Labels "com.docker.compose.project"}} {{index .Labels "com.docker.compose.network"}} {{range $id, $_ := .Containers}}{{$id}} {{end}}'
+docker --context default ps --filter "publish=18025" --format '{{.ID}} {{.Ports}}'
+ss -ltn '( sport = :18025 )'
+powershell.exe -NoProfile -Command 'Get-NetTCPConnection -LocalPort 18025 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalAddress'
+```
+
+Run the network inspection only when the exact network exists; a missing
+network is expected before first deployment and makes `network inspect` fail.
+Compare the reported immutable ID and attachment IDs privately with the
+previously approved stack identities. Stop on unrelated or unexplained members.
+
+In a clean shell, set `STACK_MAILPIT_IMAGE` to that reviewed digest reference
+without printing a resolved Compose config. Keep `STACK_EMAIL_DELIVERY_MODE`
+unset for the initial capture-only operation. After separately approved image
+and resource checks, start **only** the new capture service:
+
+```bash
+docker --context default compose --env-file "$STACK_ENV_FILE" -f compose.stack.yaml -p "jobtracker-stack-${STACK_RUN_ID}" --profile mail-capture up -d --no-deps capture
+```
+
+Privately verify its immutable ID, project/service labels, exact image digest,
+tmpfs mounts, lack of SMTP host publication, and loopback-only UI binding.
+Check the mailbox UI locally at `http://localhost:18025`; do not print or export
+messages. If any check fails, stop and request review without changing the
+backend. Then, with **separate approval**, set
+`STACK_EMAIL_DELIVERY_MODE=stack-capture`, verify the setting is the exact value,
+and recreate **only** the backend in the same project. The backend must retain
+`APP_ENV=development`, `APP_DATABASE_MODE=stack`,
+`AUTH_ALLOWED_ORIGINS=http://localhost:18080`,
+`VERIFICATION_FRONTEND_ORIGIN=http://localhost:18080`, and
+`DEV_EMAIL_VERIFICATION_PREVIEW=false`. Confirm its health and exact container,
+network, and database-target identity before browser use. Do not run migrations.
+
+```bash
+docker --context default compose --env-file "$STACK_ENV_FILE" -f compose.stack.yaml -p "jobtracker-stack-${STACK_RUN_ID}" up -d --no-deps --force-recreate backend
+```
+
+Use a new disposable email address at `http://localhost:18080/register`.
+The generic registration response never confirms delivery. Open the captured
+message privately, follow its `/verify-email#token=...` link in the same local
+browser, then sign in and perform CRUD smoke tests. The fragment is removed
+before the verification request; never paste the link into a terminal, logs,
+issues, screenshots, HAR files, or committed files. A prior inactive account
+cannot obtain another link by registering again; resend may be subject to
+cooldown and rate limits. Captured messages may remain accessible while the
+container exists; use only disposable addresses.
+
+For later separately approved cleanup, first revert the backend to the default
+`EMAIL_DELIVERY_MODE=none` and recreate only that backend, verifying health.
+Then stop and remove **only** the verified project-scoped capture container;
+verify its immutable ID before removal. Do not use `down`, `down -v`, remove
+the stack database volume, or affect any other project. Removal discards its
+tmpfs mailbox. If identity or state is uncertain, stop for review.
 
 ## Shutdown and recovery
 
