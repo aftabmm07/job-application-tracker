@@ -113,9 +113,9 @@ PY
 
 ## Separately approved live sequence
 
-These commands are **proposals only**. No command in this section has been run
-as part of preparing the stack. Run each phase only after identity, collision,
-image, and target reviews grant separate approval.
+These commands are examples for future approved runs, not authorization to
+repeat the completed run recorded below. Run each phase only after identity,
+collision, image, and target reviews grant separate approval.
 The Compose file declares the project name, and each command selects the same
 name with `-p`. Neither mechanism proves that the project is new or that Docker
 points to the approved daemon. Check context, endpoint, existing project
@@ -157,8 +157,8 @@ resources, and port collisions independently immediately before mutations.
    ```
 
 2. With separate build approval, build **only** the new frontend/backend images.
-   Image tags and the non-root Nginx behavior require live verification; no
-   digest or runtime behavior has been verified offline.
+   Image tags and non-root Nginx behavior require verification for each run;
+   source inspection alone cannot establish runtime behavior.
 
    ```bash
    docker --context default compose --env-file "$STACK_ENV_FILE" -f compose.stack.yaml -p "jobtracker-stack-${STACK_RUN_ID}" build backend frontend
@@ -351,3 +351,27 @@ verification links, cookies, or unrestricted logs. Check source rollback
 against the private checkpoint separately from database recovery. Never treat a
 source rollback as a database rollback. Any restart, migration repair, or volume
 action needs a new identity check and approval.
+
+## Completed local end-to-end verification — 2026-10-29
+
+The operator reported a **manual browser test** of the isolated Compose project
+`jobtracker-stack-06479b7b1e0fc5d4`. PostgreSQL 17, FastAPI, React/Nginx, and
+Mailpit were healthy. Mailpit v1.32.0 used image index digest
+`sha256:0790692be935ea4420d085694f7985b1f692ca6a8771ab0e0bd8ba75ac180498`.
+Backend SMTP connectivity to `capture:1025` succeeded, and the mailbox UI
+returned HTTP 200 at `http://localhost:18025`.
+
+Through the browser, registration, captured verification-email delivery,
+account activation, sign-in, and job-application Create/Read/Update/Delete all
+passed. The first backend startup failed because its existing image did not
+support `EMAIL_DELIVERY_MODE=stack-capture`. Rebuilding the backend image and
+recreating **only** its container resolved that failure. All four isolated
+containers were then stopped cleanly with Compose `stop`, preserving the stack
+database volume. The operator reported that the original `job-tracker-db`
+remained healthy and was not modified by these Docker operations.
+
+These are observations from one local development run, not automated browser
+test results or a claim of production readiness. The stopped containers and
+preserved volume are existing resources: future use requires fresh identity,
+collision, image, and approval checks. Do not treat this run ID as a reusable
+default or run first-deployment commands against its existing resources.
