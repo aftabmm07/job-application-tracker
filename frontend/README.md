@@ -28,6 +28,23 @@ npm run lint
 npm test
 ```
 
+## Browser smoke test
+
+Playwright is separate from the `npm test` jsdom suite. Against an explicitly
+approved local frontend that is already running, set its exact loopback HTTP
+origin and run from `frontend/`:
+
+```bash
+PLAYWRIGHT_BASE_URL=http://localhost:18080 npm run test:e2e
+```
+
+The command does not start the frontend, backend, database, or Mailpit. The
+current smoke test checks only that `/` returns HTTP 200, the document title is
+correct, and React mounts content. It does not register an account or test
+authentication. The configuration uses one headless Chromium worker, no retries,
+and disables screenshots, video, and traces. Keep future verification links,
+credentials, and cookies out of test output and artifacts.
+
 ## Email verification
 
 For an ordinary local browser demo, use the opt-in, disposable mail-capture
