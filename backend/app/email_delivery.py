@@ -13,7 +13,7 @@ from fastapi import Request
 from app.auth_config import (
     AuthConfigurationError, AuthSettings, LOCAL_CAPTURE_FRONTEND_ORIGINS,
     LOCAL_CAPTURE_SMTP_HOST, LOCAL_CAPTURE_SMTP_PORT,
-    STACK_CAPTURE_FRONTEND_ORIGIN, STACK_CAPTURE_SMTP_HOST, STACK_CAPTURE_SMTP_PORT,
+    STACK_CAPTURE_SMTP_HOST, STACK_CAPTURE_SMTP_PORT,
 )
 
 
@@ -115,10 +115,10 @@ class StackCaptureEmailSender(LocalCaptureEmailSender):
     def __init__(self, settings: AuthSettings):
         if (settings.environment != "development" or settings.email_delivery_mode != "stack-capture"
                 or settings.smtp is not None or settings.dev_email_verification_preview
-                or settings.verification_frontend_origin != STACK_CAPTURE_FRONTEND_ORIGIN
-                or settings.allowed_browser_origins != (STACK_CAPTURE_FRONTEND_ORIGIN,)):
+                or settings.verification_frontend_origin != settings.stack_capture_origin
+                or settings.allowed_browser_origins != (settings.stack_capture_origin,)):
             raise AuthConfigurationError("Stack email capture is not safely configured")
-        self._origin = STACK_CAPTURE_FRONTEND_ORIGIN
+        self._origin = settings.stack_capture_origin
         self._host = STACK_CAPTURE_SMTP_HOST
         self._port = STACK_CAPTURE_SMTP_PORT
 

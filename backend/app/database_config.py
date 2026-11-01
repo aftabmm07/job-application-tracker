@@ -9,6 +9,7 @@ DEMO_USER = "jobtracker_demo"
 STACK_HOST = "db"
 STACK_PORT = 5432
 STACK_USER = "jobtracker_stack"
+PROTECTED_E2E_RUN_IDS = frozenset({"06479b7b1e0fc5d4", "d3a273dcf94789a9"})
 STACK_KEYS = frozenset({
     "STACK_RUN_ID", "STACK_DATABASE_NAME", "STACK_DATABASE_HOST",
     "STACK_DATABASE_PORT", "STACK_DATABASE_USER", "STACK_POSTGRES_PASSWORD",
@@ -45,6 +46,11 @@ def stack_database_target(values):
     run_id = values.get("STACK_RUN_ID")
     if not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{16}", run_id):
         raise DatabaseConfigurationError("STACK_RUN_ID must be 16 lowercase hex characters")
+    e2e_run_id = values.get("E2E_RUN_ID")
+    if e2e_run_id is not None and e2e_run_id != run_id:
+        raise DatabaseConfigurationError("E2E_RUN_ID must match the selected stack run")
+    if e2e_run_id in PROTECTED_E2E_RUN_IDS:
+        raise DatabaseConfigurationError("E2E_RUN_ID is reserved")
     name = validate_database_name(f"jobtracker_stack_{run_id}", "Stack database name")
     expected = {
         "STACK_DATABASE_NAME": name, "STACK_DATABASE_HOST": STACK_HOST,
@@ -65,7 +71,8 @@ def stack_database_target(values):
     )
     if any(key in values for key in conflicts):
         raise DatabaseConfigurationError("Stack mode conflicts with other database target settings")
-    return StackDatabaseTarget(name, f"jobtracker-stack-{run_id}", password)
+    project = f"jobtracker-e2e-{run_id}" if e2e_run_id else f"jobtracker-stack-{run_id}"
+    return StackDatabaseTarget(name, project, password)
 
 
 def demo_database_target(values):

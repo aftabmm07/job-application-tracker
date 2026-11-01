@@ -88,6 +88,9 @@ the source-level diagrams: [system context](docs/architecture/system-context.md)
 [Docker deployment](docs/architecture/docker-deployment.md), and
 [implemented CI pipeline](docs/architecture/ci-pipeline.md).
 
+The separate Playwright environment is documented as an unprovisioned proposal
+in the [disposable E2E runbook](docs/playwright-e2e-infrastructure.md).
+
 ## Development Status
 
 The project is under active development.

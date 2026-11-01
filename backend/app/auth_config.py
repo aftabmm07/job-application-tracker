@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from email_validator import EmailNotValidError, validate_email
+from app.database_config import PROTECTED_E2E_RUN_IDS
 
 
 class AuthConfigurationError(ValueError):
@@ -25,6 +26,25 @@ LOCAL_CAPTURE_FRONTEND_ORIGINS = frozenset({
 STACK_CAPTURE_SMTP_HOST = "capture"
 STACK_CAPTURE_SMTP_PORT = 1025
 STACK_CAPTURE_FRONTEND_ORIGIN = "http://localhost:18080"
+
+
+def e2e_capture_origin(values: Mapping[str, str]) -> str | None:
+    """Allow a different loopback port only for an explicitly identified E2E run."""
+    names = ("E2E_RUN_ID", "E2E_FRONTEND_PORT")
+    if not any(name in values for name in names):
+        return None
+    run_id = values.get("E2E_RUN_ID")
+    port = values.get("E2E_FRONTEND_PORT")
+    if (values.get("APP_ENV") != "development"
+            or values.get("APP_DATABASE_MODE") != "stack"
+            or values.get("EMAIL_DELIVERY_MODE") != "stack-capture"
+            or not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{16}", run_id)
+            or run_id in PROTECTED_E2E_RUN_IDS
+            or run_id != values.get("STACK_RUN_ID")
+            or not isinstance(port, str) or not re.fullmatch(r"[1-9][0-9]{4}", port)
+            or not 20000 <= int(port) <= 60999):
+        raise AuthConfigurationError("E2E capture requires a matching run and approved loopback port")
+    return f"http://localhost:{port}"
 
 
 def _positive_integer(values, name, default, maximum):
@@ -122,9 +142,11 @@ class AuthSettings:
     verification_frontend_origin: str | None = None
     email_delivery_mode: str = "none"
     smtp: SmtpSettings | None = field(default=None, repr=False)
+    stack_capture_origin: str = STACK_CAPTURE_FRONTEND_ORIGIN
 
     @classmethod
     def from_environment(cls, values: Mapping[str, str]):
+        capture_origin = e2e_capture_origin(values) or STACK_CAPTURE_FRONTEND_ORIGIN
         environment = values.get("APP_ENV", "development").strip().lower()
         if environment not in {"development", "production"}:
             raise AuthConfigurationError("APP_ENV must be development or production")
@@ -217,8 +239,8 @@ class AuthSettings:
                 if dev_email_verification_preview:
                     raise AuthConfigurationError("Development preview cannot be combined with local capture")
             if delivery_mode == "stack-capture":
-                if (frontend_origin != STACK_CAPTURE_FRONTEND_ORIGIN
-                        or allowed_origins != (STACK_CAPTURE_FRONTEND_ORIGIN,)):
+                if (frontend_origin != capture_origin
+                        or allowed_origins != (capture_origin,)):
                     raise AuthConfigurationError("Stack capture requires the exact local frontend origin")
                 if dev_email_verification_preview:
                     raise AuthConfigurationError("Development preview cannot be combined with stack capture")
@@ -230,7 +252,7 @@ class AuthSettings:
         body_bytes = _positive_integer(values, "JSON_MAX_BODY_BYTES", 65536, 1048576)
         return cls(environment, name, secure, absolute, idle, secret_bytes, allowed_origins,
                    hash_concurrency, body_bytes, dev_email_verification_preview, frontend_origin,
-                   delivery_mode, smtp)
+                   delivery_mode, smtp, capture_origin)
 
 
 @lru_cache(maxsize=1)
