@@ -31,11 +31,17 @@ npm test
 ## Browser smoke test
 
 Playwright is separate from the `npm test` jsdom suite. Against an explicitly
-approved local frontend that is already running, set its exact loopback HTTP
-origin and run from `frontend/`:
+approved, already running disposable E2E stack, set its reviewed run ID and
+loopback ports. The browser origin must match that stack's frontend port
+exactly. From `frontend/`:
 
 ```bash
-PLAYWRIGHT_BASE_URL=http://localhost:18080 npm run test:e2e
+PLAYWRIGHT_E2E_RUN_ID=<approved-new-run-id> \
+PLAYWRIGHT_E2E_FRONTEND_PORT=<approved-frontend-port> \
+PLAYWRIGHT_E2E_MAIL_UI_PORT=<approved-mailpit-ui-port> \
+PLAYWRIGHT_BASE_URL=http://localhost:<approved-frontend-port> \
+PLAYWRIGHT_MAILPIT_URL=http://localhost:<approved-mailpit-ui-port> \
+npm run test:e2e
 ```
 
 The command does not start the frontend, backend, database, or Mailpit. The
@@ -43,7 +49,16 @@ current smoke test checks only that `/` returns HTTP 200, the document title is
 correct, and React mounts content. It does not register an account or test
 authentication. The configuration uses one headless Chromium worker, no retries,
 and disables screenshots, video, and traces. Keep future verification links,
-credentials, and cookies out of test output and artifacts.
+credentials, and cookies out of test output and artifacts. The account helper
+creates unique fictional addresses and passwords. The Mailpit helper searches
+summaries for the exact recipient, sender, and subject and returns only an
+opaque message ID; it does not read email bodies. Future sensitive browser
+tests should import `e2e/fixtures/safeTest.js` for failure-only route-label
+attachments. This fixture never records URLs, fragments, screenshots, video,
+or traces. Verification-link extraction and authentication/CRUD browser flows
+belong to a later phase. The environment variables identify the *intended*
+run; they do not prove the live Docker project or database identity. Follow
+the separate operator gates in `../docs/playwright-e2e-infrastructure.md`.
 
 ## Email verification
 

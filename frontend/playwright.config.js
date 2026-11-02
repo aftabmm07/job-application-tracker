@@ -1,19 +1,7 @@
 import { defineConfig } from '@playwright/test'
+import { approvedE2EEnvironment } from './e2e/helpers/approvedEnvironment.js'
 
-const rawBaseURL = process.env.PLAYWRIGHT_BASE_URL
-let baseURL
-try {
-  const parsed = new URL(rawBaseURL)
-  if (parsed.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(parsed.hostname)
-      || parsed.username || parsed.password || parsed.pathname !== '/'
-      || parsed.search || parsed.hash || !parsed.port) {
-    throw new Error()
-  }
-  baseURL = parsed.origin
-} catch {
-  // Never echo a supplied URL: it could contain credentials or a bearer token.
-  throw new Error('PLAYWRIGHT_BASE_URL must be an explicit local HTTP origin with a port')
-}
+const { frontendOrigin: baseURL } = approvedE2EEnvironment()
 
 export default defineConfig({
   testDir: './e2e',

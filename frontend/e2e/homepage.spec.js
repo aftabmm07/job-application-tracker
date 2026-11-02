@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures/safeTest.js'
 
 test('frontend homepage serves and mounts the application', async ({ page }) => {
   const response = await page.goto('/')
