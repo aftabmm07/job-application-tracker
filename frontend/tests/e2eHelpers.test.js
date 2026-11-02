@@ -3,12 +3,13 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { approvedE2EEnvironment } from '../e2e/helpers/approvedEnvironment.js'
-import { waitForVerificationMessage } from '../e2e/helpers/mailpit.js'
+import { readVerificationToken, waitForVerificationMessage } from '../e2e/helpers/mailpit.js'
 import { newTestAccount } from '../e2e/helpers/testAccount.js'
 
 const RUN_ID = 'a1b2c3d4e5f60718'
 const ACCOUNT = 'playwright-0123456789abcdef01234567@example.com'
 const TOKEN = 'SYNTHETIC_TOKEN_' + 'x'.repeat(43)
+const BEARER = 'A'.repeat(43)
 
 function approvedValues() {
   return {
@@ -25,6 +26,12 @@ function message(recipient = ACCOUNT) {
     ID: 'mail123', Subject: 'Verify your Job Application Tracker email',
     From: { Address: 'verify@jobtracker.test' }, To: [{ Address: recipient }],
     Snippet: TOKEN,
+  }
+}
+
+function fullMessage(link = `http://localhost:22080/verify-email#token=${BEARER}`) {
+  return {
+    ...message(), Text: `Use this link to verify your email address:\n\n${link}\n`,
   }
 }
 
@@ -209,6 +216,67 @@ test('Mailpit lookup rejects unapproved destination and recipient before fetch',
     fetchImpl: async () => { called = true },
   }))
   assert.equal(called, false)
+})
+
+test('matched Mailpit message yields only a validated transient bearer', async () => {
+  let requested
+  const token = await readVerificationToken({
+    mailpitOrigin: 'http://localhost:22025', messageId: 'mail123', recipient: ACCOUNT,
+    environment: approvedValues(),
+    fetchImpl: async (url, options) => {
+      requested = { url, options }
+      return { ok: true, json: async () => fullMessage() }
+    },
+  })
+  assert.ok(token === BEARER)
+  assert.equal(requested.url.pathname, '/api/v1/message/mail123')
+  assert.equal(requested.url.search, '')
+  assert.equal(requested.options.method, 'GET')
+  assert.equal(requested.options.redirect, 'error')
+})
+
+test('verification link rejects malformed messages and incorrect origins without disclosure', async () => {
+  const invalid = [
+    null, {}, { ...fullMessage(), ID: 'other' },
+    { ...fullMessage(), To: [{ Address: 'other@example.com' }] },
+    fullMessage(`http://localhost:22081/verify-email#token=${BEARER}`),
+    fullMessage(`http://example.com:22080/verify-email#token=${BEARER}`),
+    fullMessage(`http://localhost:22080/verify-email?token=${BEARER}`),
+    fullMessage(`http://localhost:22080/login#token=${BEARER}`),
+    fullMessage(`http://localhost:22080/verify-email#token=${BEARER.slice(1)}`),
+    fullMessage(`http://localhost:22080/verify-email#token=${BEARER}\nhttp://example.com/other`),
+    { ...fullMessage(), Text: TOKEN },
+  ]
+  for (const payload of invalid) {
+    await assert.rejects(readVerificationToken({
+      mailpitOrigin: 'http://localhost:22025', messageId: 'mail123', recipient: ACCOUNT,
+      environment: approvedValues(),
+      fetchImpl: async () => ({ ok: true, json: async () => payload }),
+    }), (error) => error.message === 'E2E verification email could not be validated'
+      && !String(error).includes(BEARER) && !String(error).includes(TOKEN))
+  }
+})
+
+test('message retrieval rejects unsafe inputs and sanitizes API failures', async () => {
+  let calls = 0
+  for (const change of [
+    { mailpitOrigin: 'http://example.com:22025' },
+    { messageId: '../other' },
+    { recipient: 'person@example.com' },
+  ]) {
+    await assert.rejects(readVerificationToken({
+      mailpitOrigin: 'http://localhost:22025', messageId: 'mail123', recipient: ACCOUNT,
+      environment: approvedValues(), ...change,
+      fetchImpl: async () => { calls += 1 },
+    }))
+  }
+  assert.equal(calls, 0)
+  await assert.rejects(readVerificationToken({
+    mailpitOrigin: 'http://localhost:22025', messageId: 'mail123', recipient: ACCOUNT,
+    environment: approvedValues(),
+    fetchImpl: async () => { throw new Error(BEARER + TOKEN) },
+  }), (error) => error.message === 'E2E verification email could not be validated'
+    && !String(error).includes(BEARER) && !String(error).includes(TOKEN))
 })
 
 test('failure attachment allowlists routes and keeps Playwright rich artifacts off', () => {

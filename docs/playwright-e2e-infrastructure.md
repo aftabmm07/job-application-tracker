@@ -77,12 +77,13 @@ python3 backend/scripts/e2e_preflight.py
    Captured mail contains bearer links; keep messages and Playwright output
    private. Do not log or export tokens, cookies, passwords, or email bodies.
 5. **Testing.** Run `npm run test:e2e` from `frontend/` only after the approved
-   environment is ready. The current browser suite is a homepage smoke test;
-   registration and CRUD scenarios are future work. Offline helpers generate a
-   fresh fictional account and select its Mailpit message by exact recipient,
-   sender, and subject; they return only a message ID and do not fetch the
-   bearer-bearing body. Future tests must handle links transiently and keep
-   bearer URLs out of Playwright failures and artifacts. Only a small, allowlisted
+   environment is ready. The suite contains a homepage smoke test and a
+   registration → verification → sign-in scenario; CRUD scenarios are future
+   work. The account helper generates a fresh fictional account. The Mailpit
+   helper selects its exact message, validates sender/recipient and the
+   fragment-only link, and passes the bearer transiently to the browser.
+   Never print the email body or link. Keep bearer URLs out of Playwright
+   failures and artifacts. Only a small, allowlisted
    route label may be attached on failure; screenshot, video, and trace capture
    remain off.
 6. **Shutdown and cleanup require separate approval.** First stop only the

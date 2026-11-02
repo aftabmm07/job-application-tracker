@@ -66,3 +66,43 @@ export async function waitForVerificationMessage({ mailpitOrigin, recipient, env
   if (sawTransientFailure) throw new Error('E2E mailbox unavailable within the E2E timeout')
   throw new Error('Verification email did not arrive within the E2E timeout')
 }
+
+export async function readVerificationToken({ mailpitOrigin, messageId, recipient,
+  environment = process.env, fetchImpl = fetch }) {
+  const { frontendOrigin, mailpitOrigin: approvedMailpitOrigin } =
+    approvedE2EEnvironment(environment)
+  if (mailpitOrigin !== approvedMailpitOrigin
+      || !/^playwright-[0-9a-f]{24}@example\.com$/.test(recipient)
+      || typeof messageId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(messageId)) {
+    throw new Error('Invalid E2E mailbox request')
+  }
+  try {
+    const endpoint = new URL(`/api/v1/message/${messageId}`, mailpitOrigin)
+    const response = await fetchImpl(endpoint, {
+      method: 'GET', redirect: 'error', headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!response.ok) throw new Error()
+    const message = await response.json()
+    if (message?.ID !== messageId || message.Subject !== SUBJECT
+        || message.From?.Address !== FROM || !Array.isArray(message.To)
+        || message.To.length !== 1 || message.To[0]?.Address !== recipient
+        || typeof message.Text !== 'string' || message.Text.length > 8192) {
+      throw new Error()
+    }
+    const links = message.Text.match(/https?:\/\/[^\s<>"']+/g)
+    if (!links || links.length !== 1) throw new Error()
+    const link = new URL(links[0])
+    const match = /^#token=([A-Za-z0-9_-]{43})$/.exec(link.hash)
+    if (!match || link.origin !== frontendOrigin || link.pathname !== '/verify-email'
+        || link.search || link.username || link.password
+        || links[0] !== `${frontendOrigin}/verify-email#token=${match[1]}`) {
+      throw new Error()
+    }
+    // Return only the transient bearer. Never return or persist the body/link.
+    return match[1]
+  } catch {
+    // The API body, URL, and transport error can contain bearer material.
+    throw new Error('E2E verification email could not be validated')
+  }
+}
