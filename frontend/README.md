@@ -28,22 +28,36 @@ npm run lint
 npm test
 ```
 
-## Browser smoke test
+## Browser E2E tests
 
 Playwright is separate from the `npm test` jsdom suite. Against an explicitly
-approved local frontend that is already running, set its exact loopback HTTP
-origin and run from `frontend/`:
+approved, already running disposable E2E stack, set its reviewed run ID and
+loopback ports. The browser origin must match that stack's frontend port
+exactly. From `frontend/`:
 
 ```bash
-PLAYWRIGHT_BASE_URL=http://localhost:18080 npm run test:e2e
+PLAYWRIGHT_E2E_RUN_ID=<approved-new-run-id> \
+PLAYWRIGHT_E2E_FRONTEND_PORT=<approved-frontend-port> \
+PLAYWRIGHT_E2E_MAIL_UI_PORT=<approved-mailpit-ui-port> \
+PLAYWRIGHT_BASE_URL=http://localhost:<approved-frontend-port> \
+PLAYWRIGHT_MAILPIT_URL=http://localhost:<approved-mailpit-ui-port> \
+npm run test:e2e
 ```
 
 The command does not start the frontend, backend, database, or Mailpit. The
-current smoke test checks only that `/` returns HTTP 200, the document title is
-correct, and React mounts content. It does not register an account or test
-authentication. The configuration uses one headless Chromium worker, no retries,
-and disables screenshots, video, and traces. Keep future verification links,
-credentials, and cookies out of test output and artifacts.
+homepage smoke test checks HTTP 200, title, and React mounting. A separate
+scenario registers a unique fictional account, validates its captured
+verification link, activates the account, and signs in. It leaves the account
+in the disposable E2E database. The configuration uses one headless Chromium
+worker, no retries, and disables screenshots, video, and traces. Keep
+credentials, links, and cookies out of test output and artifacts. The Mailpit
+helper selects the exact recipient's message and validates its link without
+logging the body; the bearer is passed transiently to the browser. Sensitive
+browser tests use `e2e/fixtures/safeTest.js` for failure-only route-label
+attachments. This fixture never records URLs, fragments, screenshots, video,
+or traces. CRUD browser flows belong to a later phase. The environment variables identify the *intended*
+run; they do not prove the live Docker project or database identity. Follow
+the separate operator gates in `../docs/playwright-e2e-infrastructure.md`.
 
 ## Email verification
 

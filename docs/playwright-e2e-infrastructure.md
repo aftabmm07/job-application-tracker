@@ -68,14 +68,24 @@ python3 backend/scripts/e2e_preflight.py
 4. **Services, separately approved.** Start the Mailpit `capture` service,
    then backend and frontend after their dependencies are healthy. Confirm
    browser and Mailpit UI respond only on the approved loopback ports. Set
-   `PLAYWRIGHT_BASE_URL=http://localhost:<approved-frontend-port>` for the
-   browser test. The backend's allowed Origin and verification-link origin are
+   `PLAYWRIGHT_BASE_URL=http://localhost:<approved-frontend-port>` and
+   `PLAYWRIGHT_MAILPIT_URL=http://localhost:<approved-mailpit-ui-port>` for the
+   browser test, along with the matching `PLAYWRIGHT_E2E_RUN_ID`,
+   `PLAYWRIGHT_E2E_FRONTEND_PORT`, and `PLAYWRIGHT_E2E_MAIL_UI_PORT`. Playwright
+   rejects missing, reserved, or mismatched values. The backend's allowed Origin and verification-link origin are
    exactly that value. Mailpit SMTP remains internal at `capture:1025`.
    Captured mail contains bearer links; keep messages and Playwright output
    private. Do not log or export tokens, cookies, passwords, or email bodies.
 5. **Testing.** Run `npm run test:e2e` from `frontend/` only after the approved
-   environment is ready. The current browser suite is a homepage smoke test;
-   registration and CRUD scenarios are future work.
+   environment is ready. The suite contains a homepage smoke test and a
+   registration → verification → sign-in scenario; CRUD scenarios are future
+   work. The account helper generates a fresh fictional account. The Mailpit
+   helper selects its exact message, validates sender/recipient and the
+   fragment-only link, and passes the bearer transiently to the browser.
+   Never print the email body or link. Keep bearer URLs out of Playwright
+   failures and artifacts. Only a small, allowlisted
+   route label may be attached on failure; screenshot, video, and trace capture
+   remain off.
 6. **Shutdown and cleanup require separate approval.** First stop only the
    exact verified E2E project services. Stopping preserves the database volume.
    Review immutable resource identities before any later container or volume
