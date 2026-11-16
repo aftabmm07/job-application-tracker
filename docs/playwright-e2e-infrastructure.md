@@ -77,15 +77,19 @@ python3 backend/scripts/e2e_preflight.py
    Captured mail contains bearer links; keep messages and Playwright output
    private. Do not log or export tokens, cookies, passwords, or email bodies.
 5. **Testing.** Run `npm run test:e2e` from `frontend/` only after the approved
-   environment is ready. The suite contains a homepage smoke test and a
-   registration → verification → sign-in scenario; CRUD scenarios are future
-   work. The account helper generates a fresh fictional account. The Mailpit
-   helper selects its exact message, validates sender/recipient and the
-   fragment-only link, and passes the bearer transiently to the browser.
+   environment is ready. The suite contains a homepage smoke test, a
+   registration → verification → sign-in scenario, and a UI-based application
+   Create → Read → Update → Delete scenario. Each auth scenario creates a fresh
+   fictional account. The Mailpit helper selects its exact message, validates
+   sender/recipient and the fragment-only link, and passes the bearer
+   transiently to the browser.
    Never print the email body or link. Keep bearer URLs out of Playwright
    failures and artifacts. Only a small, allowlisted
    route label may be attached on failure; screenshot, video, and trace capture
-   remain off.
+   remain off. Playwright browser E2E tests do not currently run in GitHub
+   Actions. The manual browser test recorded in the
+   [container runbook](container-stack.md) used a separate isolated stack; it
+   does not establish execution of these scenarios.
 6. **Shutdown and cleanup require separate approval.** First stop only the
    exact verified E2E project services. Stopping preserves the database volume.
    Review immutable resource identities before any later container or volume

@@ -1,6 +1,13 @@
 
 # Development Setup Guide
 
+This guide retains historical development checkpoints for context. Their descriptions
+are not current setup instructions. The current application has verified-account
+authentication, owner-scoped application CRUD, profile management, and schema
+revision `0005_user_profile`. For a new isolated container run, use the separately
+approved [container stack runbook](container-stack.md); do not reuse an existing
+database or Compose project.
+
 ## Prerequisites
 
 - Git
@@ -18,39 +25,14 @@ git clone https://github.com/aftabmm07/job-application-tracker.git
 cd job-application-tracker
 ```
 
-## PostgreSQL Setup
+## Historical PostgreSQL setup — protected original
 
-The application uses PostgreSQL 17 running in Docker.
-
-### 1. Configure Environment Variables
-
-Create a `.env` file in the project root:
-
-```env
-POSTGRES_PASSWORD=replace_with_your_local_password
-```
-
-Use your own password. Never commit the `.env` file.
-
-### 2. Start PostgreSQL
-
-From the project root:
-
-```bash
-docker compose up -d
-```
-
-### 3. Verify Database Status
-
-```bash
-docker compose ps
-```
-
-The `job-tracker-db` container should show a healthy status.
-
-PostgreSQL is accessible locally at `127.0.0.1:5432`.
-
-The Docker Compose configuration uses a named volume to persist database data.
+The original development setup used `compose.yaml`, the `job-tracker-db`
+container, and a persistent PostgreSQL 17 volume. Those resources are protected;
+this section is historical context, not a command to start or reuse them. For
+current development, obtain approval for a fresh isolated database target and
+follow its reviewed setup procedure. The [isolated container stack
+runbook](container-stack.md) documents one such separately gated workflow.
 
 
 ## Backend Setup (Ubuntu WSL)
@@ -157,7 +139,8 @@ running any database commands. This phase deliberately blocks `jobtracker_db`
 from migration tooling. Never apply this branch to the original database without
 a separately approved deployment/migration plan.
 
-The current models require revision `0003_email_verification_tokens`. Existing PostgreSQL instances
+The current models require revision `0005_user_profile`. Revision `0004_email_verification_outbox`
+adds the dormant outbox schema; it does not enable outbox delivery. Existing PostgreSQL instances
 still on the old schema cannot serve ORM application queries from this branch
 until a separately approved migration is completed. Unit tests use isolated SQLite.
 
@@ -165,8 +148,8 @@ until a separately approved migration is completed. Unit tests use isolated SQLi
 
 Only after approval to use an isolated, migrated development database, select its
 name explicitly. Do not use the original database or preserved rehearsal databases
-without separate approval. The name below is an example approved development target,
-not permission to change it:
+without separate approval. The name below is a placeholder development target
+requiring separate approval, not permission to use it:
 
 ```bash
 APP_ENV=development APP_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m uvicorn app.main:app --reload
@@ -188,11 +171,16 @@ http://127.0.0.1:8000
 | GET | `/health` | Basic API health check |
 | GET | `/health/db` | PostgreSQL connectivity check |
 | POST | `/applications` | Create a job application |
-| GET | `/applications` | List all job applications |
-| GET | `/applications/{application_id}` | Retrieve an application by ID |
+| GET | `/applications` | List the signed-in user's job applications |
+| GET | `/applications/{application_id}` | Retrieve one of the signed-in user's applications |
 | PATCH | `/applications/{application_id}` | Update an existing application |
 | DELETE | `/applications/{application_id}` | Delete an application |
 | GET | `/docs` | Interactive Swagger API documentation |
+
+`/auth` provides registration, verification, resend, login, session, logout,
+and authenticated GET/PATCH profile endpoints. Application mutations require a
+verified session and valid CSRF token; the JSON example below is a request body,
+not a complete unauthenticated request.
 
 ### Application Status Values
 
@@ -240,7 +228,8 @@ Database connection configuration is defined in:
 
 `backend/app/database.py`
 
-The database connection uses:
+The original Compose database used the following settings. It is protected and
+must not be selected as a current application or migration target:
 
 - Host: `127.0.0.1`
 - Port: `5432`
@@ -248,7 +237,7 @@ The database connection uses:
 - Username: `jobtracker`
 - Password: loaded from `POSTGRES_PASSWORD`
 
-To verify connectivity, start the API and visit:
+For a separately approved, migrated target, verify connectivity by visiting:
 
 http://127.0.0.1:8000/health/db
 
@@ -274,19 +263,19 @@ python -m pytest -v
 ```
 
 
-### Current Test Coverage
+### Historical test inventory and current coverage
 
-The original backend coverage includes **12 API tests**, supplemented by
-configuration and password-security tests in Phase 14.
+The original checkpoint had **12 API tests**; the current suite also covers
+authentication, verification, ownership, profile, configuration, and migrations.
 
-Four tests cover API and database health:
+The original checkpoint included four tests for API and database health:
 
 1. API welcome endpoint
 2. API health endpoint
 3. Successful database connectivity check
 4. Database connectivity failure handling
 
-Eight tests cover job application management:
+Its other eight tests covered job application management:
 
 1. Create an application
 2. List applications
@@ -303,7 +292,9 @@ This prevents test records from affecting the development PostgreSQL database.
 
 The database health tests use mocking.
 
-A running PostgreSQL container is not required for these automated tests, but `POSTGRES_PASSWORD` must be configured when importing the application.
+The isolated SQLite and mocked tests do not require a running PostgreSQL
+container. PostgreSQL integration and ownership tests use separately approved
+disposable targets; do not point them at preserved databases.
 
 
 ### CI Testing
@@ -312,7 +303,10 @@ GitHub Actions runs the backend tests and a fresh PostgreSQL 17 migration/metada
 check for pushes and pull requests targeting `main`. The CI database is explicitly
 named `jobtracker_auth_ci`; SQLite migration tests also cover populated legacy data.
 
-The CI workflow supplies a dummy `POSTGRES_PASSWORD` environment variable for the mocked tests.
+Backend CI also runs explicit ownership checks against its disposable PostgreSQL
+service. Frontend CI runs `npm ci`, tests, lint, and build; Playwright browser
+tests do not run in GitHub Actions. The backend CI workflow supplies a dummy
+`POSTGRES_PASSWORD` for mocked tests.
 
 ## Development Notes
 
@@ -324,8 +318,9 @@ The CI workflow supplies a dummy `POSTGRES_PASSWORD` environment variable for th
 
 ## Authentication foundations (Phase 14)
 
-This checkpoint adds validated configuration and password hashing only. It does
-not enable authentication or create users, sessions, endpoints, or database tables.
+Historical checkpoint: this phase added validated configuration and password
+hashing only. Authentication, users, sessions, endpoints, and tables were added
+later and are present in the current application.
 Application startup calls `get_auth_settings()` so invalid production settings
 stop startup. Existing health endpoints and CRUD behavior remain unchanged.
 
@@ -358,8 +353,10 @@ It requires a verification frontend origin of `http://localhost:5173` or
 the private development preview. Normal `smtp` mode still requires authenticated,
 certificate-validated STARTTLS. No mail-capture configuration is a production fallback.
 
-`POSTGRES_PASSWORD` remains required by the existing database configuration.
-`APP_DATABASE_NAME` is also required in every environment, with no fallback. Use
+For ordinary database mode, `POSTGRES_PASSWORD` and `APP_DATABASE_NAME` are
+required. Demo and stack modes instead require their distinct private passwords
+and derive database names from approved run IDs; they do not use the ordinary
+target. Ordinary database names use
 1–63 lowercase ASCII letters, digits or underscores, starting with a letter. Names
 are not trimmed or truncated. `jobtracker_db`, `postgres`, `template0` and
 `template1` are forbidden before engine creation. Exported values take precedence
@@ -368,12 +365,14 @@ intended migrated database; no development target is selected automatically.
 These checks validate configuration, not migration state or permission to use a DB.
 `python-dotenv==1.2.4` is now explicitly declared, alongside `pwdlib[argon2]==0.3.1`.
 
-### Future isolated container stack database (configuration only)
+### Isolated container stack database
 
 The guarded `APP_DATABASE_MODE=stack` is a development-only configuration for a
-future isolated Compose stack. Image definitions and an offline Compose plan
-are documented in [container-stack.md](container-stack.md); none have been
-built or started. Selecting the mode does not create a database or run migrations.
+separately approved isolated Compose stack. The configuration and runbook are
+documented in [container-stack.md](container-stack.md). One local stack run was
+previously exercised and stopped, with its database volume preserved; the present
+runtime state is unverified. Selecting the mode does not create a database or run
+migrations.
 It requires an explicit `APP_ENV=development`, a new 16-character lowercase
 hexadecimal `STACK_RUN_ID`, and matching explicit settings:
 `STACK_DATABASE_NAME=jobtracker_stack_<run-id>`, `STACK_DATABASE_HOST=db`,
@@ -391,10 +390,10 @@ approval.
 
 ### Isolated disposable MVP demo database
 
-The operator-approved current demo run has been started and its Docker metadata
-reports a healthy container, dedicated volume/network, and loopback-only port.
-No migration has been applied or database connection made for this run. This is
-a status report, not approval to reuse its identity or provision another run.
+In a previous operator record, the isolated demo database was verified at
+`0005_user_profile` and used for a local browser demo. Its present container and
+database state have not been rechecked. This record is not approval to reuse its
+identity or provision another run.
 Future runs require a new reviewed run ID and separate approval.
 
 `compose.demo-db.yaml` is a **separate, opt-in** PostgreSQL 17 service. It is
@@ -417,8 +416,8 @@ process environment. Do not print environment dumps, database URLs, unrestricted
 `docker compose config`, or Docker inspection output because they can contain
 passwords. The older `APP_DATABASE_MODE=disposable` path remains blocked.
 
-**Future operations require separate approval. Do not rerun creation for the
-already-started current run.** In a private shell with tracing disabled, an
+**Future operations require separate approval. Do not rerun creation for an
+existing run.** In a private shell with tracing disabled, an
 operator preparing a future run would generate a fresh `DEMO_RUN_ID` with a
 cryptographic random generator, privately set a
 different `DEMO_POSTGRES_PASSWORD`, and export `APP_ENV=development` and
@@ -470,11 +469,11 @@ python -m alembic current
 Alembic refuses an absent or mismatched `MIGRATION_DATABASE_NAME` and validates
 the connected database name before schema changes. `upgrade head` creates the
 versioned schema, including the dormant outbox table; it does not activate
-outbox delivery. The current demo run remains unmigrated. A later approved backend start must use the same `DEMO_RUN_ID`
+outbox delivery. A later approved backend start must use the same `DEMO_RUN_ID`
 and demo password, without `MIGRATION_DATABASE_NAME` being required. Check
 `/health/db`, then register and verify a disposable account using the approved
-local capture mailbox. Docker health and metadata were checked for the current
-run; migration, API, and mail behavior remain unverified.
+local capture mailbox. These future-run instructions do not verify the current
+state of the previously exercised demo or authorize operations on it.
 
 Cleanup has two distinct stages. `docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" ps`
 is read-only inspection. `docker --context default compose -f compose.demo-db.yaml -p "jobtracker-demo-${DEMO_RUN_ID}" down` stops
@@ -562,6 +561,10 @@ configuration tests use isolated mappings and synthetic test-only values.
   matching the model. One-hour lifetime and single-use activation are service
   rules, not additional database constraints. No existing rows are changed and
   no tokens or owners are backfilled. Downgrade is disabled to preserve token state.
+- `0004_email_verification_outbox` adds a dormant verification-email outbox table;
+  no production route, startup hook, or sender processes it.
+- `0005_user_profile` adds six nullable profile columns to `users` without
+  changing existing user or application records.
 
 An already migrated `0002_auth_models` database needs an upgrade, not stamping.
 Only after separate approval of the exact disposable target, use the guarded
@@ -578,8 +581,8 @@ Users have normalized unique email, an Argon2id-format password hash, UTC creati
 and optional email verification timestamps, and `is_active=false` by default.
 A database check prevents activation before email verification. The hash-prefix
 check is a storage guard, not password verification; use the password helpers.
-Email normalization is trim/lowercase; syntax validation belongs to future request
-schemas. Database uniqueness and normalization checks also protect direct inserts.
+Email normalization is trim/lowercase; current request schemas also validate email
+syntax. Database uniqueness and normalization checks protect direct inserts.
 
 Sessions store **32-byte binary SHA-256 digests**, never raw bearer tokens, with a
 unique index. Nullable user_id supports anonymous pre-login sessions. User deletion
@@ -590,11 +593,10 @@ UTCDateTime rejects naive writes, normalizes aware values to UTC, and restores U
 awareness when SQLite returns naive UTC. Existing application creation timestamp
 SQL type is unchanged. SQLite foreign keys are enabled for every test connection.
 
-**Security boundary:** CRUD authorization is not implemented in this checkpoint.
-Existing endpoints still expose all rows on their configured development database;
-new nullable ownership alone does not isolate legacy records. Keep this intermediate
-branch private/local. Do not deploy publicly until authentication and owner-scoped
-queries are implemented. Verified ownership backfill is a later, explicit operation.
+**Historical security boundary:** At this checkpoint, CRUD authorization was not
+yet implemented; nullable ownership alone did not isolate legacy records. Current
+endpoints enforce authenticated owner-scoped queries. Verified ownership backfill
+for legacy records remains a separate, explicit operation.
 
 ### Migration target safety
 
@@ -711,6 +713,9 @@ CI additionally runs `alembic upgrade head` / `alembic check` against its dispos
 PostgreSQL service. Rehearsal databases are separate from all pytest databases.
 
 ## Session and CSRF foundations (Phase 14, checkpoint 9B.3)
+
+This section records the original helper design. References below to future auth
+endpoints or frontend integration describe that checkpoint, not current behavior.
 
 At checkpoint 9B.3 these helpers were not attached to endpoints. Checkpoint 9B.4
 below adds the auth API while keeping health and application CRUD behavior unchanged.
@@ -837,10 +842,11 @@ cleanup. Reuse the existing backend pytest command.
 
 ## Authentication API (Phase 14, checkpoint 9B.4)
 
-Checkpoint 9B.4 added backend auth endpoints. Checkpoint 9B.5 below now protects
-application CRUD; the frontend still needs Phase 15 authentication integration.
-**Do not deploy publicly yet**, and never run this branch on the original unmigrated
-`jobtracker_db`. No email is sent, and production account activation is not provided.
+This section records the backend-auth checkpoint. Current React pages and proxy
+integrate registration, verification, resend, sign-in, and owner-scoped CRUD.
+Email delivery is configurable, but no production provider or public deployment
+is established. **Do not deploy publicly yet** or target the protected original
+`jobtracker_db`.
 
 ### Safe local target and test workflow
 
@@ -861,9 +867,9 @@ APP_ENV=development APP_DATABASE_NAME=jobtracker_auth_fresh_9b2 python -m uvicor
 
 Starting a server and using registration/login/bootstrap will write that selected
 DB. Do not run this command or issue database-changing HTTP requests without the
-required approval. The frontend proxy does not yet include /auth; test directly
-against the backend with an HTTP client/cookie jar and the trusted development
-Origin header, or use the existing automated TestClient suite.
+required approval. This direct-client example is historical; the current Vite
+proxy includes `/auth`. Use a separately approved isolated environment for
+manual browser testing.
 
 ### Endpoint flow and HTTP contract
 
@@ -1092,12 +1098,15 @@ PostgreSQL concurrent scheduling behavior; the opt-in CI check is sequential.
 RLS is not enabled: SQL ownership filters protect API access, not direct privileged
 SQL or future code that omits them. Continue reviewing new data endpoints.
 
-Before production: verified-email activation, shared multi-worker throttling,
+Before production: shared multi-worker throttling,
 HTTPS/proxy and secret-management review, dependency/logging review, request size
 limits, operational monitoring, and separately approved original-data migration and
 verified ownership backfill are still required. Do not publicly deploy this branch.
 
 ### Required Phase 15 frontend changes
+
+Historical checklist: these changes were subsequently implemented in the
+current frontend. Keep the list as design context, not pending work.
 
 1. Add /auth to the existing Vite proxy, retaining HTML/API distinction for
    /applications. Bootstrap authentication with /auth/me before fetching private
@@ -1105,14 +1114,14 @@ verified ownership backfill are still required. Do not publicly deploy this bran
 2. Fetch /auth/csrf with the same-origin cookie, keep its token in memory, and use
    application/json plus X-CSRF-Token on POST/PATCH/DELETE and auth mutations.
    Fetch a new CSRF token after login rotation; never use localStorage for sessions.
-3. Supply login/logout and registration/activation-required UI. Public registration
-   does not activate users or send verification mail yet.
+3. Supply login/logout and registration/activation-required UI. At this
+   checkpoint, registration did not activate users or deliver verification mail.
 4. On logout, 401, or account changes, abort stale requests and clear application
    lists, analytics and account-specific state so one user's cached data cannot
    appear for the next user. Handle CSRF 403 separately and bootstrap/retry only
    when appropriate; never blindly replay a mutation that may have committed.
 5. Continue deriving summaries and charts from the full owner-scoped API list.
-   The current frontend was deliberately not modified and is not yet auth-ready.
+   The frontend at this checkpoint was not yet auth-ready.
 
 ## Strict session expiration and explicit cleanup (security fix 61.2C)
 

@@ -1,110 +1,105 @@
 # Job Application Tracker
 
-A web-based job application management dashboard for tracking applications, managing application statuses, analyzing job descriptions, and improving the job search workflow.
+A full-stack application for organizing a private job search: track applications,
+review progress, and manage your profile in a React interface backed by FastAPI
+and PostgreSQL.
 
-## Project Goals
+**Status:** The local MVP is implemented. It is not publicly deployed.
 
-The application will allow users to:
+## What the application does
 
-- Add and manage job applications
-- Track application status
-- Store job descriptions and job links
-- Track interviews and follow-ups
-- View job application statistics through a dashboard
-- Analyze job descriptions
-- Compare job requirements with a CV
-- Identify relevant skills and keywords
+- **Accounts:** Register, verify email, request a new link, sign in, and sign out.
+- **Applications:** Create, inspect, edit, and delete records with a confirmation
+  step. Track company, role, location, status, date, and job description.
+- **Search and filter:** Find applications by company or role and narrow them by
+  status. Use a desktop table or mobile cards.
+- **Dashboard:** Review totals, status and monthly charts, plus interview and
+  offer indicators based on current records.
+- **Profile:** Manage your name, headline, location, and HTTPS professional links;
+  see your verified email as read-only.
 
-## Planned Tech Stack
+Application queries and changes are scoped to the signed-in user. Registration
+and resend use generic responses, and verification does not sign the user in.
+The UI handles loading, empty, and error states and hides private data when a
+session cannot be confirmed.
 
-- Frontend: React
-- Backend: Python / FastAPI
-- Database: PostgreSQL
-- Containerization: Docker
-- CI/CD: GitHub Actions
-- Version Control: Git & GitHub
+## Technology
 
-## Project Status
+| Layer | Implementation |
+| --- | --- |
+| Frontend | React, Vite, React Router, Recharts; responsive CSS |
+| Backend | Python, FastAPI, Pydantic, SQLAlchemy |
+| Database | PostgreSQL 17 with Alembic migrations |
+| Local containers | Docker Compose; Nginx serves the built frontend and proxies API requests |
+| Local email testing | Optional Mailpit capture; no paid email service required |
+| Automation | GitHub Actions, Pytest, Node test runner, Oxlint, Playwright source tests |
 
-     In development
+Email verification uses expiring bearer links delivered through a configurable
+sender. The local capture mode is development-only; production requires a
+separately configured SMTP sender and HTTPS verification origin. The advanced
+transactional email outbox is present as dormant source and is not active.
 
-## Development Roadmap
+## Getting started safely
 
-1. Project setup
-2. Backend API
-3. Database integration
-4. Frontend dashboard
-5. Job application management
-6. Job description analysis
-7. CV matching
-8. Testing
-9. Dockerization
-10. CI/CD pipeline
-11. Cloud deployment
+There are several database and Compose configurations in this repository.
+Choose a fresh, explicitly reviewed local target before starting services or
+running migrations. Do not reuse an existing project, volume, or database.
 
+1. Read the [development setup guide](docs/setup.md) for the local Python,
+   PostgreSQL, and Vite workflows.
+2. For the isolated React/Nginx, FastAPI, and PostgreSQL stack, follow the
+   [container operator runbook](docs/container-stack.md). It separates resource
+   checks, private settings, migrations, service startup, and cleanup.
+3. Use [frontend instructions](frontend/README.md) for frontend commands and
+   browser behavior. The optional local mailbox contains sensitive links;
+   follow the runbook's access and cleanup precautions.
 
-## Current Implementation
+The isolated container stack was used in a **recorded manual browser test** on
+2026-10-29: registration, captured email verification, sign-in, and application
+Create/Read/Update/Delete passed. The run's containers were stopped while its
+database volume was preserved. This is one local observation, not a currently
+running deployment, an automated browser result, or production validation.
 
-### Backend
-- Python with FastAPI
-- REST API endpoints
-- Automated testing with Pytest
-- GitHub Actions CI pipeline
+## API and architecture
 
-### Database
-- PostgreSQL 17 running in Docker
-- Docker Compose for local database setup
-- SQLAlchemy for database connectivity
-- Psycopg PostgreSQL driver
-- Environment-based database credentials
-- Persistent PostgreSQL storage using Docker volumes
+FastAPI exposes `/auth` routes for CSRF bootstrap, registration, verification,
+resend, login, logout, identity, and profile; `/applications` routes provide
+owner-scoped CRUD. `/health` and `/health/db` report service and database health.
+The frontend uses same-origin API paths; Nginx routes API requests to FastAPI
+and serves React routes from the built assets.
 
-### Available API Endpoints
+- [System context](docs/architecture/system-context.md)
+- [Logical container view](docs/architecture/container-view.md)
+- [Isolated Docker deployment design](docs/architecture/docker-deployment.md)
+- [CI pipeline diagram](docs/architecture/ci-pipeline.md)
 
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/` | API welcome message |
-| GET | `/health` | API health check |
-| GET | `/health/db` | PostgreSQL connectivity check |
-| GET | `/docs` | Interactive API documentation |
+The diagrams describe source design. Consult the operator runbook and verify
+live resource identities before interpreting any deployment status.
 
-## Quick Start
+## Testing and CI
 
-1. Clone the repository.
-2. Create a `.env` file in the project root containing `POSTGRES_PASSWORD`.
-3. Start PostgreSQL using `docker compose up -d`.
-4. Install backend dependencies from `backend/requirements.txt`.
-5. Start FastAPI using `python -m uvicorn app.main:app --reload` from the `backend` directory.
-6. Open http://127.0.0.1:8000/docs to explore the API.
+Two GitHub Actions workflows run on pull requests targeting `main` and pushes
+to `main`:
 
-For detailed setup instructions, see [Development Setup Guide](docs/setup.md).
+- **Backend CI** installs hash-locked Python dependencies, runs Pytest, checks
+  Alembic migrations against a fresh PostgreSQL 17 CI service, and runs the
+  explicitly enabled ownership test.
+- **Frontend CI** installs from the npm lockfile with `npm ci`, then runs the
+  existing unit/DOM tests, lint, and production build.
 
-## Architecture
+Playwright source covers a homepage smoke check, registration through email
+verification and sign-in, and application CRUD. Browser E2E tests require a
+separately approved disposable environment; **they do not run in CI**. Neither
+CI workflow builds a release image or deploys the application.
 
-The isolated full-container stack is documented as a **proposal; it has not
-been provisioned**. See the [operator runbook](docs/container-stack.md) and
-the source-level diagrams: [system context](docs/architecture/system-context.md),
-[container view](docs/architecture/container-view.md),
-[Docker deployment](docs/architecture/docker-deployment.md), and
-[implemented CI pipeline](docs/architecture/ci-pipeline.md).
+For test boundaries and operator steps, see the
+[disposable E2E runbook](docs/playwright-e2e-infrastructure.md),
+[PostgreSQL integration-test guide](docs/postgres-integration-tests.md), and
+[frontend test guide](frontend/README.md).
 
-The separate Playwright environment is documented as an unprovisioned proposal
-in the [disposable E2E runbook](docs/playwright-e2e-infrastructure.md).
+## Scope and next ideas
 
-## Development Status
-
-The project is under active development.
-
-Completed:
-- FastAPI backend initialization
-- Backend unit tests
-- GitHub Actions CI
-- PostgreSQL integration and connectivity checks
-
-Planned:
-- Job application database models
-- CRUD API endpoints
-- React frontend
-- Job application status tracking
-- Job description analysis and CV matching
-- Full application containerization and deployment
+The MVP is a private application tracker. Job URL import, job search automation,
+job-description analysis, and CV matching are **planned ideas**, not implemented
+features. Public deployment would also require separate review of HTTPS,
+credentials, email delivery, shared rate limiting, and operational safeguards.
