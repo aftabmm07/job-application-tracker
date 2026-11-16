@@ -1,24 +1,43 @@
-# Container view — proposed, unprovisioned stack
+# C4 Container View — Job Application Tracker
 
-This C4-style container diagram shows logical application and data-store roles.
-Here, each role maps to a proposed Docker container in `compose.stack.yaml`;
-the C4 term "container" does not itself mean a Docker container. Vite builds
-React assets into the frontend image; it is not a runtime server in this stack.
+These are logical C4 application containers and data stores, mapped to services
+in `compose.stack.yaml`. A C4 container is not inherently a Docker container.
+Vite builds React assets into the frontend image; Nginx serves them at runtime.
+The [runbook](../container-stack.md) records one manual local run and shutdown;
+this view makes no claim about current availability.
 
 ```mermaid
 flowchart LR
-    browser["Browser<br/>localhost:18080"]
-    subgraph stack["Job Application Tracker — proposed Compose project"]
-        frontend["Frontend container<br/>Nginx serves built React assets and proxies API paths"]
-        backend["Backend container<br/>FastAPI and guarded stack database target"]
-        db["Database container<br/>PostgreSQL 17"]
+    browser["Job seeker's browser"]
+    operator["Local demo operator"]
+    subgraph system["Job Application Tracker — isolated development stack"]
+        frontend["Frontend<br/>Nginx serves Vite-built React assets<br/>Same-origin API reverse proxy"]
+        backend["Backend<br/>FastAPI: auth, verification, profile,<br/>owner-scoped CRUD"]
+        db[("PostgreSQL 17<br/>Users, sessions and applications")]
+        capture["Mailpit — optional<br/>Development-only email capture"]
     end
-    browser -->|"HTTP requests"| frontend
-    frontend -->|"/auth and /applications API via edge network"| backend
-    backend -->|"SQL via private network, db:5432"| db
+    smtp["Configured SMTP server<br/>Code capability; not used by this stack"]
+
+    browser -->|"HTTP, localhost:18080"| frontend
+    frontend -->|"HTTP API: /auth and /applications<br/>edge network"| backend
+    backend -->|"SQL/TCP, db:5432<br/>private network"| db
+    backend -.->|"SMTP, capture:1025<br/>mail network; opt-in"| capture
+    operator -.->|"HTTP mailbox UI<br/>localhost:18025; opt-in"| capture
+    backend -.->|"Authenticated STARTTLS<br/>other supported configurations only"| smtp
+
+    classDef actor fill:#e8f1ff,stroke:#4466aa,color:#172b4d
+    classDef app fill:#e8f6ed,stroke:#348054,color:#153723
+    classDef data fill:#eee9fb,stroke:#69529d,color:#35265c
+    classDef optional fill:#fff4df,stroke:#9b7226,color:#4d3916
+    class browser,operator actor
+    class frontend,backend app
+    class db data
+    class capture,smtp optional
 ```
 
-Only Nginx has a published host port. The browser's exact origin must match
-`AUTH_ALLOWED_ORIGINS`; CSRF headers are required for protected mutations, not
-every browser request. The backend requires separately approved migrations
-before application requests; image startup does not run Alembic.
+Only Nginx and the optional Mailpit UI publish loopback host ports. FastAPI
+enforces session, trusted-origin, CSRF, and owner checks; CSRF applies to
+protected mutations, not every browser request. Verification links are delivered
+only when a sender is explicitly configured. Migration `0004` defines the
+outbox table, but no outbox worker or production path uses it. Migrations require
+separate approval and are not run at API startup.

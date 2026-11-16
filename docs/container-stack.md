@@ -11,8 +11,8 @@ identity. Use only `compose.stack.yaml`; never combine it with `compose.yaml`,
   Do not reuse the protected demo run ID or any existing stack identity.
 - The Compose project is `jobtracker-stack-<run-id>`, database is
   `jobtracker_stack_<run-id>`, and role is `jobtracker_stack`. Compose scopes the
-  `stack_pgdata` volume and both networks to that project. There are no external
-  volumes, networks, or fixed container names.
+  `stack_pgdata` volume and all three networks (`edge`, `private`, `mail`) to that
+  project. There are no external volumes, networks, or fixed container names.
 - By default, only the frontend publishes a port: `127.0.0.1:18080:8080`.
   PostgreSQL and FastAPI have no host ports. PostgreSQL joins only the internal
   private network; the frontend joins only the edge network; the backend joins
@@ -144,8 +144,9 @@ resources, and port collisions independently immediately before mutations.
 
    The expected new resources are project-scoped
    `jobtracker-stack-${STACK_RUN_ID}_stack_pgdata`,
-   `jobtracker-stack-${STACK_RUN_ID}_edge`, and
-   `jobtracker-stack-${STACK_RUN_ID}_private`. The name filters may also return
+   `jobtracker-stack-${STACK_RUN_ID}_edge`,
+   `jobtracker-stack-${STACK_RUN_ID}_private`, and
+   `jobtracker-stack-${STACK_RUN_ID}_mail`. The name filters may also return
    partial matches: treat **any** output as a reason to stop and investigate,
    not as permission to adopt a resource. On a non-WSL host, use its equivalent
    passive host-listener check. Do not use a TCP probe or connect to PostgreSQL.
@@ -254,15 +255,15 @@ network, and stop on any unexpected resource. Check that port 18025 is unused
 in WSL and Windows; do not stop another listener. Check that the Mailpit image
 reference is the reviewed official `docker.io/axllent/mailpit:v1.32.0` image
 with a **complete, independently verified** `sha256:` digest for the intended
-platform. The repository deliberately supplies no image digest: the disabled
+platform. This Compose file supplies no default usable image digest: its disabled
 default image is an unusable sentinel. Never use a floating tag or start this
 profile until an operator supplies and reviews `STACK_MAILPIT_IMAGE`.
 For a **first deployment**, the project-scoped `mail` network must be absent
-along with the other new project resources. For the **already running stack**,
-the backend's network declaration may already have created it, even though
-Mailpit has never started. In that case, require the previously approved
-network ID, exact Compose project/network labels, and only the expected backend
-attachment before proceeding. A name match alone is insufficient; if no prior
+along with the other new project resources. For an **existing verified project**,
+whether running or stopped, the backend's network declaration may already have
+created it. In that case, require the previously approved network ID, exact
+Compose project/network labels, and only the approved backend and optional capture
+attachments before proceeding. A name match alone is insufficient; if no prior
 network identity is available, stop for review. Keep `COMPOSE_PROFILES` unset
 so unrelated Compose commands cannot silently enable capture.
 The `mail` bridge is not marked `internal`: Mailpit is attached only to that
@@ -340,6 +341,21 @@ Stop only the approved project services, with the same Compose file and private
 settings. `stop` preserves containers and the database volume. Do not use
 `down -v`, `docker volume rm`, or commands aimed at the protected original or
 demo projects.
+
+If optional capture was enabled, separately approve stopping that exact
+project-scoped `capture` service after verifying its immutable container ID,
+project/service labels, and image. Use the same private settings, Compose file,
+and explicit project selection. Do not stop an unrelated Mailpit container.
+Stopping preserves its container; later removal discards its tmpfs mailbox and
+requires the separate cleanup approval described above.
+
+After those checks and approval, stop only the verified capture service:
+
+```bash
+docker --context default compose --env-file "$STACK_ENV_FILE" -f compose.stack.yaml -p "jobtracker-stack-${STACK_RUN_ID}" --profile mail-capture stop capture
+```
+
+For the core services, use the separately approved project-scoped stop command:
 
 ```bash
 docker --context default compose --env-file "$STACK_ENV_FILE" -f compose.stack.yaml -p "jobtracker-stack-${STACK_RUN_ID}" stop frontend backend db

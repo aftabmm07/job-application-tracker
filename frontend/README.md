@@ -1,13 +1,17 @@
 # Job Application Tracker Frontend
 
-React application with routed Applications and Analytics pages, add, edit, and confirmed deletion built with Vite and JavaScript. It fetches the existing
-`GET /applications` endpoint and derives all summary counts from the response.
+React/Vite application with registration, email verification, sign-in, Profile,
+Applications, and Analytics pages. Signed-in users can manage their own
+applications; summaries are derived from their application list.
 
 ## Local development
 
-Use Node.js 24 LTS and npm. Start the existing PostgreSQL database and FastAPI
-server using the instructions in `../docs/setup.md`. FastAPI must listen at
-`http://127.0.0.1:8000`.
+Use Node.js 24 and npm. Before browser use, obtain an explicitly approved,
+isolated development database and a FastAPI server configured for that target.
+Do not start or reuse the protected original database. The Vite development
+proxy expects FastAPI at `http://127.0.0.1:8000`; see the
+[setup guide](../docs/setup.md) for safety boundaries and the
+[isolated stack runbook](../docs/container-stack.md) for a separate container workflow.
 
 From `frontend/`, run:
 
@@ -45,19 +49,22 @@ npm run test:e2e
 ```
 
 The command does not start the frontend, backend, database, or Mailpit. The
-homepage smoke test checks HTTP 200, title, and React mounting. A separate
-scenario registers a unique fictional account, validates its captured
-verification link, activates the account, and signs in. It leaves the account
-in the disposable E2E database. The configuration uses one headless Chromium
+suite contains a homepage smoke test, a registration → email verification →
+sign-in scenario, and a Create → Read → Update → Delete scenario. The latter
+two use separate unique fictional accounts; they leave those accounts in the
+disposable E2E database. The configuration uses one headless Chromium
 worker, no retries, and disables screenshots, video, and traces. Keep
 credentials, links, and cookies out of test output and artifacts. The Mailpit
 helper selects the exact recipient's message and validates its link without
 logging the body; the bearer is passed transiently to the browser. Sensitive
 browser tests use `e2e/fixtures/safeTest.js` for failure-only route-label
 attachments. This fixture never records URLs, fragments, screenshots, video,
-or traces. CRUD browser flows belong to a later phase. The environment variables identify the *intended*
-run; they do not prove the live Docker project or database identity. Follow
-the separate operator gates in `../docs/playwright-e2e-infrastructure.md`.
+or traces. Playwright browser E2E tests do not currently run in GitHub Actions.
+The environment variables identify the *intended* run; they do not prove the
+live Docker project or database identity. The recorded manual browser test in
+the [container runbook](../docs/container-stack.md) was a separate run, not an
+execution of every Playwright scenario. Follow the separate operator gates in
+the [E2E runbook](../docs/playwright-e2e-infrastructure.md).
 
 ## Email verification
 
@@ -127,12 +134,15 @@ Manual browser checks, when a separately approved backend environment is availab
 The fragment exists briefly before JavaScript runs. Browser extensions/history,
 debuggers, browser network inspection, and third-party scripts can still see
 secrets; do not add analytics, error-local capture, or persistent token storage.
-Use HTTPS in production. Public email delivery remains unimplemented.
+Use HTTPS in production. A configurable authenticated STARTTLS SMTP adapter is
+implemented, but no production provider is configured and the app is not
+publicly deployed. Local capture modes are development-only.
 
-Check the dashboard with existing database records: compare its rows and summary
-counts against `http://127.0.0.1:8000/applications`. Nullable locations and dates
-show “Not provided”. At a narrow viewport the summary cards reflow and the table
-scrolls horizontally (including via keyboard focus).
+In an approved authenticated session, compare dashboard rows and summary counts
+with the application's same-origin `/applications` API response through the Vite
+proxy. Nullable locations and dates show “Not provided”. At narrow mobile widths,
+summary cards reflow and applications appear as cards. The desktop/tablet table
+has a keyboard-focusable scroll region when needed.
 
 An empty database shows zero counts and an empty message. Stop FastAPI and reload
 to check the error state, then restart FastAPI and select **Try again**. Use browser
@@ -183,7 +193,7 @@ as readable field messages, and non-JSON server errors use an HTTP status fallba
 6. Change a field, then Cancel or press Escape. Reopen and confirm the original
    data remains. Tab through the dialog and check focus returns to Edit on cancel;
    after a save and list refresh, focus falls back to Add Application.
-7. Check a narrow viewport and horizontal table scrolling. Throttle requests to
+7. Check mobile application cards and the desktop table. Throttle requests to
    verify saving feedback and disabled controls prevent repeat submissions.
 8. Stop FastAPI before saving to check network errors. For HTTP 404, 422, and 503,
    use browser request interception/local response overrides on the PATCH request
@@ -209,10 +219,11 @@ included. Both modes use the same form, validation, styles, and status constants
 3. Cancel, reopen, and press Escape. Confirm no DELETE was sent, the row and counts
    remain unchanged, and focus returns to the row's Delete button. Reopen and click
    outside the dialog: it must stay open without sending a request.
-4. Confirm with **Delete Application**. Verify one DELETE `/applications/{id}` with
-   no request body, an empty 204 response, then GET `/applications`. Check success
-   feedback, the removed row, total reduced by one, and the corresponding status
-   count reduced by one. Focus returns to Add Application. Reload to verify removal.
+4. Confirm with **Delete Application**. Verify one DELETE `/applications/{id}`
+   with JSON `{}` and a CSRF header, an empty 204 response, then GET
+   `/applications`. Check success feedback, the removed row, total reduced by
+   one, and the corresponding status count reduced by one. Focus returns to
+   Add Application. Reload to verify removal.
 5. Test on a narrow viewport and using Tab/Shift+Tab. Throttle requests before
    confirming to check the deleting message and disabled buttons; repeated clicks
    must not send duplicate requests. Cancel and Escape are disabled while deleting.
