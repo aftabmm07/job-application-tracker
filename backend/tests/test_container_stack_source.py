@@ -107,7 +107,7 @@ def test_health_dependencies_and_runbook_safety():
     assert "COMPOSE_PROFILES" in guide
     assert 'network inspect "jobtracker-stack-${STACK_RUN_ID}_mail"' in guide
     assert "For a **first deployment**, the project-scoped `mail` network must be absent" in guide
-    assert "the backend's network declaration may already have created it" in guide
+    assert "the backend's network declaration may already have created it" in " ".join(guide.split())
     assert "path != expected" in guide and "settings['STACK_RUN_ID'] != run_id" in guide
     preflight = guide.split("backend python -c '", 1)[1].split("\n   '", 1)[0]
     ast.parse(textwrap.dedent(preflight))
