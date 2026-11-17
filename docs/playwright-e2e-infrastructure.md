@@ -3,7 +3,9 @@
 `compose.e2e.yaml` is a separate development stack. Its database and mailbox are
 disposable. One isolated E2E run was completed and stopped as recorded below;
 these instructions govern **future, fresh runs**. This document does not
-authorize a Docker, database, or cleanup operation. Never reuse run IDs
+authorize a Docker, database, or cleanup operation. Repository configuration is
+source only; it does not establish a provisioned or authorized environment for
+future runs. Never reuse run IDs
 `06479b7b1e0fc5d4`, `d3a273dcf94789a9`, or `a91e6c02d4b7583f`, or combine
 this file with another Compose file.
 
