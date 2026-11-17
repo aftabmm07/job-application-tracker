@@ -1,9 +1,36 @@
-# Disposable Playwright environment — source only, not provisioned
+# Disposable Playwright environment — operator runbook
 
 `compose.e2e.yaml` is a separate development stack. Its database and mailbox are
-disposable. This document does not authorize a Docker, database, or cleanup
-operation. Never reuse run IDs `06479b7b1e0fc5d4` or
-`d3a273dcf94789a9`, or combine this file with another Compose file.
+disposable. One isolated E2E run was completed and stopped as recorded below;
+these instructions govern **future, fresh runs**. This document does not
+authorize a Docker, database, or cleanup operation. Never reuse run IDs
+`06479b7b1e0fc5d4`, `d3a273dcf94789a9`, or `a91e6c02d4b7583f`, or combine
+this file with another Compose file.
+
+## Completed local regression — 2026-11-17
+
+The operator reported that all five execution gates passed for baseline `main`
+commit `5e41445`, using Playwright 1.64.1 with one worker. The isolated project
+was `jobtracker-e2e-a91e6c02d4b7583f`, with frontend port `42080` and Mailpit
+UI port `42025`. PostgreSQL 17 reached Alembic revision
+`0005_user_profile (head)`.
+
+| Browser scenario | Result | Duration |
+| --- | --- | ---: |
+| Application Create/Read/Update/Delete | Passed | 1.9s |
+| Registration, email verification, and sign-in | Passed | 844ms |
+| Homepage loading and mounting | Passed | 143ms |
+
+Playwright reported **3 passed in 5.5 seconds**. Post-test database health was
+HTTP 200, healthy and connected. All four service containers stopped with exit
+code 0; four one-off migration and verification containers exited with code 0.
+The database volume was preserved, no destructive cleanup was performed, and
+fictional test records remain isolated. The operator reported a clean Git
+working tree after execution. Current container or database availability has
+not been checked. This local result is neither a CI run nor production
+validation, and it does not establish exhaustive browser coverage. The run ID
+is **non-reusable**; approve a new identity and repeat every gate for any
+future regression.
 
 ## Approve identity and private settings
 
