@@ -61,10 +61,13 @@ browser tests use `e2e/fixtures/safeTest.js` for failure-only route-label
 attachments. This fixture never records URLs, fragments, screenshots, video,
 or traces. Playwright browser E2E tests do not currently run in GitHub Actions.
 The environment variables identify the *intended* run; they do not prove the
-live Docker project or database identity. The recorded manual browser test in
-the [container runbook](../docs/container-stack.md) was a separate run, not an
-execution of every Playwright scenario. Follow the separate operator gates in
-the [E2E runbook](../docs/playwright-e2e-infrastructure.md).
+live Docker project or database identity. A [local Playwright regression on
+2026-11-17](../docs/playwright-e2e-infrastructure.md#completed-local-regression--2026-11-17)
+passed all three scenarios and was stopped afterward. The earlier manual browser
+test in the [container runbook](../docs/container-stack.md) used a separate stack.
+For any new run, follow the approval gates in the
+[E2E runbook](../docs/playwright-e2e-infrastructure.md); do not reuse the
+completed run ID.
 
 ## Email verification
 

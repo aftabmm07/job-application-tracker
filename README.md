@@ -91,6 +91,9 @@ Playwright source covers a homepage smoke check, registration through email
 verification and sign-in, and application CRUD. Browser E2E tests require a
 separately approved disposable environment; **they do not run in CI**. Neither
 CI workflow builds a release image or deploys the application.
+An isolated local regression [passed all three Playwright scenarios on
+2026-11-17](docs/playwright-e2e-infrastructure.md#completed-local-regression--2026-11-17);
+that completed run was stopped and is not a live deployment.
 
 For test boundaries and operator steps, see the
 [disposable E2E runbook](docs/playwright-e2e-infrastructure.md),
@@ -99,7 +102,8 @@ For test boundaries and operator steps, see the
 
 ## Scope and next ideas
 
-The MVP is a private application tracker. Job URL import, job search automation,
-job-description analysis, and CV matching are **planned ideas**, not implemented
-features. Public deployment would also require separate review of HTTPS,
+The MVP is a private application tracker. **Phase 2F — Job Description Import**
+is the next MVP milestone; it is not implemented yet. Job search automation,
+job-description analysis, and CV matching are later ideas, also not implemented.
+Public deployment would require separate review of HTTPS,
 credentials, email delivery, shared rate limiting, and operational safeguards.
