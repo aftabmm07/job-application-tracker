@@ -23,6 +23,31 @@ PORT = "22080"
 ORIGIN = f"http://localhost:{PORT}"
 
 
+def assert_future_run_warnings(guide):
+    introduction = " ".join(guide.split("## Completed local regression", 1)[0].split())
+    assert "does not authorize a Docker, database, or cleanup operation" in introduction
+    assert re.search(
+        r"\brepository configuration\b.{0,80}\b(?:does not|cannot) establish\b"
+        r".{0,80}\bprovisioned\b.{0,40}\bauthorized\b.{0,40}\bfuture runs\b",
+        introduction, re.IGNORECASE,
+    )
+
+
+def test_future_run_warnings_allow_wrapping_but_require_both_safeguards():
+    guide = (ROOT / "docs/playwright-e2e-infrastructure.md").read_text()
+    wrapped = guide.replace("does not\nauthorize", "does not\n\nauthorize").replace(
+        "a provisioned or authorized", "a provisioned\nor authorized")
+    assert wrapped != guide
+    assert_future_run_warnings(wrapped)
+    for missing in (
+        "does not\nauthorize a Docker, database, or cleanup operation",
+        "it does not establish a provisioned or authorized environment for\nfuture runs",
+    ):
+        assert missing in guide
+        with pytest.raises(AssertionError):
+            assert_future_run_warnings(guide.replace(missing, "", 1))
+
+
 def settings_values():
     return {
         "E2E_RUN_ID": RUN, "E2E_FRONTEND_PORT": PORT,
@@ -231,10 +256,11 @@ def test_database_target_rejects_e2e_identity_mismatch():
 
 def test_runbook_requires_explicit_migration_target_and_separate_approval():
     guide = (ROOT / "docs/playwright-e2e-infrastructure.md").read_text()
+    assert_future_run_warnings(guide)
     for phrase in ("MIGRATION_DATABASE_NAME", "0005_user_profile", "separate approval",
-                   "jobtracker-e2e-", "PLAYWRIGHT_BASE_URL", "source only"):
+                   "jobtracker-e2e-", "PLAYWRIGHT_BASE_URL"):
         assert phrase in guide
-    assert "Compose\nuses shell variables before `--env-file` values" in guide
+    assert "Compose uses shell variables before `--env-file` values" in " ".join(guide.split())
     for name in ("E2E_FRONTEND_PORT", "E2E_MAIL_UI_PORT", "E2E_POSTGRES_PASSWORD",
                  "E2E_CSRF_HMAC_SECRET"):
         assert name in guide.split("unset in the shell:", 1)[0]
