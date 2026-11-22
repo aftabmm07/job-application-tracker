@@ -308,6 +308,54 @@ service. Frontend CI runs `npm ci`, tests, lint, and build; Playwright browser
 tests do not run in GitHub Actions. The backend CI workflow supplies a dummy
 `POSTGRES_PASSWORD` for mocked tests.
 
+### Pre-push validation
+
+Use the already installed Python and frontend dependencies. Start at the
+repository root. For infrastructure configuration or runbook changes, run the
+focused source tests from `backend/`:
+
+```bash
+cd backend
+RUN_POSTGRES_OWNERSHIP_TESTS=0 RUN_ISOLATED_POSTGRES_TESTS=0 \
+  python -m pytest -q tests/test_container_stack_source.py tests/test_e2e_infrastructure_source.py
+cd ..
+```
+
+For backend code or tests, run the broader offline suite instead (or in addition
+when infrastructure files also changed):
+
+```bash
+cd backend
+RUN_POSTGRES_OWNERSHIP_TESTS=0 RUN_ISOLATED_POSTGRES_TESTS=0 \
+  python -m pytest -q --ignore=tests/postgresql --ignore=tests/test_postgres_ownership.py
+cd ..
+```
+
+For frontend code or tests, run these from `frontend/`:
+
+```bash
+cd frontend
+npm test
+npm run lint
+npm run build
+cd ..
+```
+
+For documentation-only changes, run the relevant source tests if the edited
+runbook is checked by them. Always finish at the repository root with:
+
+```bash
+git diff --check
+```
+
+These offline checks must not start Docker, provision resources, run migrations,
+or modify existing databases; backend tests use disposable SQLite and mocks.
+They do not replace Backend CI's migration and ownership
+checks against its fresh PostgreSQL service. Playwright browser E2E tests need
+separately approved isolated infrastructure; follow the
+[E2E runbook](playwright-e2e-infrastructure.md) rather than running them as an
+offline pre-push check.
+
 ## Development Notes
 
 - `.env` contains local credentials and must never be committed.

@@ -4,12 +4,33 @@ from pathlib import Path
 import re
 import textwrap
 
+import pytest
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = (ROOT / "compose.stack.yaml").read_text()
 STACK = yaml.safe_load(SOURCE)
+
+
+def assert_mail_network_warnings(guide):
+    narrative = " ".join(guide.replace("**", "").split())
+    assert "For a first deployment, the project-scoped `mail` network must be absent" in narrative
+    assert "the backend's network declaration may already have created it" in narrative
+
+
+def test_mail_network_warnings_allow_wrapping_but_require_both_cases():
+    guide = (ROOT / "docs/container-stack.md").read_text()
+    wrapped = guide.replace("`mail` network must be absent", "`mail` network\nmust be absent")
+    assert wrapped != guide
+    assert_mail_network_warnings(wrapped)
+    for missing in (
+        "For a **first deployment**, the project-scoped `mail` network must be absent",
+        "the backend's network declaration may already have\ncreated it",
+    ):
+        assert missing in guide
+        with pytest.raises(AssertionError):
+            assert_mail_network_warnings(guide.replace(missing, "", 1))
 
 
 def test_stack_identity_and_resource_isolation():
@@ -106,8 +127,7 @@ def test_health_dependencies_and_runbook_safety():
     assert "unset STACK_RUN_ID COMPOSE_PROJECT_NAME COMPOSE_FILE" in guide
     assert "COMPOSE_PROFILES" in guide
     assert 'network inspect "jobtracker-stack-${STACK_RUN_ID}_mail"' in guide
-    assert "For a **first deployment**, the project-scoped `mail` network must be absent" in guide
-    assert "the backend's network declaration may already have created it" in " ".join(guide.split())
+    assert_mail_network_warnings(guide)
     assert "path != expected" in guide and "settings['STACK_RUN_ID'] != run_id" in guide
     preflight = guide.split("backend python -c '", 1)[1].split("\n   '", 1)[0]
     ast.parse(textwrap.dedent(preflight))
